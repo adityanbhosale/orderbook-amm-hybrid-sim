@@ -4,6 +4,8 @@ A Venue is any matching environment that accepts orders from agents and
 produces a price. AMMs, CLOBs, and hybrid mechanisms all implement this
 interface, allowing the same agent populations to trade across regimes.
 """
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional
@@ -22,10 +24,11 @@ class OrderResult:
 @dataclass
 class VenueState:
     """Snapshot of venue state, returned to agents on observation."""
-    mid_price: float
-    best_bid: Optional[float]    # None if no bids resting
-    best_ask: Optional[float]    # None if no asks resting
-    spread: Optional[float]      # None if either side empty
+
+    mid_price: float | None
+    best_bid: Optional[float]
+    best_ask: Optional[float]
+    spread: Optional[float]
     tick: int
 
 
