@@ -57,6 +57,23 @@ SIGNAL_REGIMES: dict[SignalRegimeName, dict[str, float]] = {
     "high": {"signal_noise_std": 0.055, "tail_noise_std": 0.022},
 }
 
+ANCHOR_DISPLACEMENT_STD = 0.01
+
+
+def _anchor_displacements(
+    anchor_rng: np.random.Generator, n_markets: int
+) -> np.ndarray:
+    """Per-market N(0, std) shocks; drawn from seed-dedicated RNG before agents."""
+    return anchor_rng.normal(0.0, ANCHOR_DISPLACEMENT_STD, size=n_markets)
+
+
+def _anchor_prices_by_market(
+    fair_arr: np.ndarray, displacements: np.ndarray
+) -> dict[int, float]:
+    return {
+        m: float(fair_arr[m] * (1.0 + displacements[m])) for m in range(len(fair_arr))
+    }
+
 
 def _default_information_config(
     *,
@@ -88,34 +105,39 @@ def _default_information_config(
 
 
 def _venues_from_truth(
-    info_env: InformationEnvironment, reserve_x: float
+    info_env: InformationEnvironment,
+    reserve_x: float,
+    anchor_prices: dict[int, float],
 ) -> dict[int, ConstantProductAMM]:
     venues: dict[int, ConstantProductAMM] = {}
     for t in info_env.world.truths:
-        fair = t.fair_price
+        m = t.market_id
+        anchor = anchor_prices[m]
         x = reserve_x
-        y = reserve_x * fair
-        venues[t.market_id] = ConstantProductAMM(float(x), float(y))
+        y = reserve_x * anchor
+        venues[m] = ConstantProductAMM(float(x), float(y))
     return venues
 
 
 def _clob_venues_from_truth(
     info_env: InformationEnvironment,
     reserve_x: float,
+    anchor_prices: dict[int, float],
 ) -> dict[int, CLOB]:
     depth = 0.005 * float(reserve_x)
     out: dict[int, CLOB] = {}
     for t in info_env.world.truths:
-        fair = float(t.fair_price)
+        m = t.market_id
         clob = CLOB()
-        clob.seed_initial_book(fair, depth)
-        out[t.market_id] = clob
+        clob.seed_initial_book(anchor_prices[m], depth)
+        out[m] = clob
     return out
 
 
 def _hybrid_venues_from_truth(
     info_env: InformationEnvironment,
     reserve_x: float,
+    anchor_prices: dict[int, float],
     *,
     lp_spread_pct: float = 0.005,
     lp_decay_factor: float = 0.7,
@@ -123,15 +145,15 @@ def _hybrid_venues_from_truth(
 ) -> dict[int, HybridVenue]:
     out: dict[int, HybridVenue] = {}
     for t in info_env.world.truths:
-        fair = float(t.fair_price)
+        m = t.market_id
         lp = HybridLpConfig(
             lp_spread_pct=lp_spread_pct,
             lp_base_qty=0.01 * float(reserve_x),
             lp_decay_factor=lp_decay_factor,
-            lp_anchor_price=fair,
+            lp_anchor_price=anchor_prices[m],
             lp_levels=lp_levels,
         )
-        out[t.market_id] = HybridVenue(lp=lp)
+        out[m] = HybridVenue(lp=lp)
     return out
 
 
@@ -332,10 +354,11 @@ def run_single_simulation(
     sig = SIGNAL_REGIMES[signal_regime]
 
     seq = np.random.SeedSequence(seed)
-    child_sim, child_world, child_agent = seq.spawn(3)
+    child_sim, child_world, child_agent, child_anchor = seq.spawn(4)
     sim_rng = np.random.default_rng(child_sim)
     world_rng = np.random.default_rng(child_world)
     agent_rng = np.random.default_rng(child_agent)
+    anchor_rng = np.random.default_rng(child_anchor)
 
     cfg = _default_information_config(
         signal_noise_std=sig["signal_noise_std"],
@@ -348,13 +371,15 @@ def run_single_simulation(
         [float(info_env.world.truths[m].fair_price) for m in range(n_markets)],
         dtype=float,
     )
+    displacements = _anchor_displacements(anchor_rng, n_markets)
+    anchor_prices = _anchor_prices_by_market(fair_arr, displacements)
 
     if mechanism == "amm":
-        venues_any = _venues_from_truth(info_env, reserve_x)
+        venues_any = _venues_from_truth(info_env, reserve_x, anchor_prices)
     elif mechanism == "clob":
-        venues_any = _clob_venues_from_truth(info_env, reserve_x)
+        venues_any = _clob_venues_from_truth(info_env, reserve_x, anchor_prices)
     else:
-        venues_any = _hybrid_venues_from_truth(info_env, reserve_x)
+        venues_any = _hybrid_venues_from_truth(info_env, reserve_x, anchor_prices)
 
     margin = MarginSpec(long_margin_fraction=1.0, short_margin_fraction=1.0)
     market_env = MarketEnvironment(venues_any, margin=margin)
@@ -395,7 +420,8 @@ def run_single_simulation(
         }
     else:
         pool_start = {
-            m: (float(reserve_x), float(reserve_x * fair_arr[m])) for m in range(n_markets)
+            m: (float(reserve_x), float(reserve_x * anchor_prices[m]))
+            for m in range(n_markets)
         }
 
     if mechanism == "amm":
@@ -503,6 +529,7 @@ def run_single_simulation(
         "noise_pnl": rpnl.noise_pnl,
         "noise_loss": rpnl.noise_loss,
         "rent_efficiency": rpnl.rent_efficiency,
+        "rent_efficiency_stable": rpnl.rent_efficiency_stable,
         "frac_informed_exhausted_before_convergence": cap_sat.fraction_informed_exhausted_before_convergence,
         "n_informed_agents": cap_sat.n_informed,
         "n_informed_exhausted": cap_sat.n_exhausted,
