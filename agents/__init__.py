@@ -14,6 +14,7 @@ from agents.informed_joint_factor import (
     JointFactorFairValueAgent,
     make_joint_factor_agent,
 )
+from agents.event_noise import EventDrivenNoiseAgent
 from agents.informed_naive import NaiveGaussianBeliefAgent
 from agents.informed_tail import TailAwareGaussianBeliefAgent
 
@@ -26,6 +27,7 @@ __all__ = [
     "make_aggregation_depth_pool",
     "JointFactorFairValueAgent",
     "make_joint_factor_agent",
+    "EventDrivenNoiseAgent",
     "NaiveGaussianBeliefAgent",
     "TailAwareGaussianBeliefAgent",
 ]
