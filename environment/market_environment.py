@@ -6,8 +6,10 @@ thin orchestration layer that owns the trade log and TRADE_EVENT handler.
 """
 from __future__ import annotations
 
+import math
+
 from environment.events import Event
-from environment.margin import MarginSpec
+from environment.margin import MarginSpec, committed_capital_limit
 from environment.simulator import Simulator
 from environment.trade_records import TradeIntent, TradeRecord
 from venues.base import Venue, VenueState
@@ -38,8 +40,12 @@ class MarketEnvironment:
     def venue(self, market_id: int) -> Venue:
         return self.venues[market_id]
 
-    def mid_price(self, market_id: int) -> float:
+    def mid_price(self, market_id: int) -> float | None:
         return self.venues[market_id].get_state().mid_price
+
+    @staticmethod
+    def _float_mid(mp: float | None) -> float:
+        return float(mp) if mp is not None else math.nan
 
     def get_state(self, market_id: int) -> VenueState:
         return self.venues[market_id].get_state()
@@ -89,8 +95,8 @@ class MarketEnvironment:
             avg_fill_price=res.avg_fill_price,
             fees_paid=res.fees_paid,
             capital_committed=cap,
-            mid_price_before=pre_mid,
-            mid_price_after=post_mid,
+            mid_price_before=self._float_mid(pre_mid),
+            mid_price_after=self._float_mid(post_mid),
         )
         self.trade_log.append(rec)
         return rec
@@ -107,13 +113,30 @@ class MarketEnvironment:
         venue = self.venues[mid]
         pre_mid = venue.get_state().mid_price
 
-        if payload.order_type != "market":
-            raise NotImplementedError("only market orders supported in substrate v1")
-
         aid = str(payload.agent_id)
-        res = venue.submit_market_order(aid, payload.side, payload.quantity)
+        lim_px = payload.limit_price
+        if payload.order_type == "market":
+            res = venue.submit_market_order(aid, payload.side, payload.quantity)
+            cap = self._capital_from_fill(
+                payload.side, res.filled_quantity, res.avg_fill_price
+            )
+        elif payload.order_type == "limit":
+            if lim_px is None:
+                raise ValueError("limit_price required for limit orders")
+            res = venue.submit_limit_order(
+                aid, payload.side, payload.quantity, float(lim_px)
+            )
+            cap = committed_capital_limit(
+                payload.side,
+                payload.quantity,
+                float(lim_px),
+                self.margin,
+                safety_margin=payload.capital_safety_margin,
+            )
+        else:
+            raise ValueError(f"unsupported order_type {payload.order_type!r}")
+
         post_mid = venue.get_state().mid_price
-        cap = self._capital_from_fill(payload.side, res.filled_quantity, res.avg_fill_price)
         self.trade_log.append(
             TradeRecord(
                 timestamp=sim.now,
@@ -124,7 +147,7 @@ class MarketEnvironment:
                 avg_fill_price=res.avg_fill_price,
                 fees_paid=res.fees_paid,
                 capital_committed=cap,
-                mid_price_before=pre_mid,
-                mid_price_after=post_mid,
+                mid_price_before=self._float_mid(pre_mid),
+                mid_price_after=self._float_mid(post_mid),
             )
         )

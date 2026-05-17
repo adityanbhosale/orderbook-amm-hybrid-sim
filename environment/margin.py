@@ -52,3 +52,26 @@ def committed_capital(
     notional = quantity * vwap
     frac = margin.long_margin_fraction if side == "buy" else margin.short_margin_fraction
     return float(notional * frac * safety_margin)
+
+
+def committed_capital_limit(
+    side: str,
+    quantity: float,
+    limit_price: float,
+    margin: MarginSpec,
+    *,
+    safety_margin: float = 1.0,
+) -> float:
+    """Collateral upper bound for a resting limit order (notional at limit price)."""
+    if quantity <= 0:
+        raise ValueError("quantity must be positive")
+    if limit_price <= 0:
+        raise ValueError("limit_price must be positive")
+    if safety_margin < 1.0:
+        raise ValueError("safety_margin must be >= 1.0")
+    if side not in ("buy", "sell"):
+        raise ValueError("side must be 'buy' or 'sell'")
+
+    notional = quantity * limit_price
+    frac = margin.long_margin_fraction if side == "buy" else margin.short_margin_fraction
+    return float(notional * frac * safety_margin)

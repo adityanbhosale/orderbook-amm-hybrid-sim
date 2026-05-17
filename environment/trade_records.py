@@ -14,6 +14,7 @@ class TradeIntent:
     quantity: float
     order_type: str = "market"  # "market" | "limit"
     limit_price: float | None = None
+    capital_safety_margin: float = 1.0
 
     def __post_init__(self) -> None:
         if self.market_id < 0:
@@ -26,6 +27,8 @@ class TradeIntent:
             raise ValueError("order_type must be 'market' or 'limit'")
         if self.order_type == "limit" and self.limit_price is None:
             raise ValueError("limit_price required for limit orders")
+        if self.capital_safety_margin < 1.0:
+            raise ValueError("capital_safety_margin must be >= 1.0")
 
 
 @dataclass(frozen=True)

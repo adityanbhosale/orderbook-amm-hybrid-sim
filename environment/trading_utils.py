@@ -5,8 +5,9 @@ import math
 
 import numpy as np
 
-from environment.margin import MarginSpec, committed_capital
+from environment.margin import MarginSpec, committed_capital, committed_capital_limit
 from venues.base import Venue
+from venues.clob import EmptyBookError
 
 
 def confidence_weighted_size(
@@ -43,9 +44,58 @@ def downsize_quantity_for_capital(
     if available <= 0:
         return 0.0
 
-    if (
-        committed_capital(
+    try:
+        c_hi = committed_capital(
             venue, side, target_quantity, margin, safety_margin=safety_margin
+        )
+    except EmptyBookError:
+        return 0.0
+    if c_hi <= available:
+        return target_quantity
+
+    lo, hi = 0.0, target_quantity
+    for _ in range(search_iters):
+        mid = 0.5 * (lo + hi)
+        if mid < min_quantity:
+            break
+        try:
+            c = committed_capital(
+                venue, side, mid, margin, safety_margin=safety_margin
+            )
+        except EmptyBookError:
+            hi = mid
+            continue
+        if c <= available:
+            lo = mid
+        else:
+            hi = mid
+    if lo < min_quantity:
+        return 0.0
+    return lo
+
+
+def downsize_limit_quantity_for_capital(
+    side: str,
+    limit_price: float,
+    target_quantity: float,
+    available: float,
+    margin: MarginSpec,
+    *,
+    safety_margin: float = 1.2,
+    min_quantity: float = 1e-6,
+    search_iters: int = 24,
+) -> float:
+    """Largest q in [0, target_quantity] with ``committed_capital_limit`` <= available."""
+    if target_quantity <= 0:
+        return 0.0
+    if available <= 0:
+        return 0.0
+    if limit_price <= 0:
+        return 0.0
+
+    if (
+        committed_capital_limit(
+            side, target_quantity, limit_price, margin, safety_margin=safety_margin
         )
         <= available
     ):
@@ -56,7 +106,9 @@ def downsize_quantity_for_capital(
         mid = 0.5 * (lo + hi)
         if mid < min_quantity:
             break
-        c = committed_capital(venue, side, mid, margin, safety_margin=safety_margin)
+        c = committed_capital_limit(
+            side, mid, limit_price, margin, safety_margin=safety_margin
+        )
         if c <= available:
             lo = mid
         else:
