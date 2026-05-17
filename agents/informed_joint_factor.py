@@ -11,8 +11,8 @@ from environment.simulator import Simulator
 from environment.trade_records import TradeIntent
 
 from agents.belief_utils import (
-    consider_trade_log_space,
     log_mid_reference,
+    route_log_space_trade,
 )
 
 
@@ -169,7 +169,10 @@ class JointFactorFairValueAgent:
         opportunities: list[tuple[float, int, float]] = []
         for m_id in self.market_ids:
             ml = implied[m_id]
-            mid_l = log_mid_reference(market_env.mid_price(m_id))
+            mid_px = market_env.mid_price(m_id)
+            if mid_px is None:
+                continue
+            mid_l = log_mid_reference(mid_px)
             diff_mag = abs(ml - mid_l)
             if diff_mag >= self.disagreement_threshold_log:
                 opportunities.append((diff_mag, m_id, ml))
@@ -194,7 +197,7 @@ class JointFactorFairValueAgent:
         market_env: MarketEnvironment,
     ) -> TradeIntent | None:
         post_prec = self._heuristic_linear_precision(market_id)
-        req, cost = consider_trade_log_space(
+        req, cost = route_log_space_trade(
             agent_id=self.agent_id,
             market_id=market_id,
             posterior_mean_log=implied_log,

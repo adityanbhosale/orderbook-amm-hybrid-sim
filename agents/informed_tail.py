@@ -8,7 +8,7 @@ from environment.signals import Signal
 from environment.simulator import Simulator
 from environment.trade_records import TradeIntent
 
-from agents.belief_utils import consider_trade_log_space, gaussian_scalar_nif_update
+from agents.belief_utils import gaussian_scalar_nif_update, route_log_space_trade
 
 
 @dataclass
@@ -117,7 +117,7 @@ class TailAwareGaussianBeliefAgent:
         market_id: int,
         market_env: MarketEnvironment,
     ) -> TradeIntent | None:
-        req, cost = consider_trade_log_space(
+        req, cost = route_log_space_trade(
             agent_id=self.agent_id,
             market_id=market_id,
             posterior_mean_log=self._mean_log[market_id],
