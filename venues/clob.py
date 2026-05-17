@@ -15,6 +15,11 @@ class EmptyBookError(RuntimeError):
     pass
 
 
+BOOTSTRAP_AGENT_ID = "-1"
+DEFAULT_BOOTSTRAP_LEVELS = 5
+DEFAULT_BOOTSTRAP_SPREAD_STEP = 0.001
+
+
 def _pkey(p: float) -> float:
     return round(float(p), 12)
 
@@ -53,6 +58,29 @@ class CLOB(Venue):
 
     def tick(self) -> None:
         self._tick += 1
+
+    def seed_initial_book(
+        self,
+        anchor_price: float,
+        depth_per_level: float,
+        *,
+        levels: int = DEFAULT_BOOTSTRAP_LEVELS,
+        spread_step: float = DEFAULT_BOOTSTRAP_SPREAD_STEP,
+    ) -> None:
+        """Post persistent bid/ask ladder so ``mid_price`` exists at cold start."""
+        if anchor_price <= 0:
+            raise ValueError("anchor_price must be positive")
+        if depth_per_level <= 0:
+            raise ValueError("depth_per_level must be positive")
+        if levels < 1:
+            raise ValueError("levels must be >= 1")
+
+        aid = BOOTSTRAP_AGENT_ID
+        for k in range(1, levels + 1):
+            bid_p = anchor_price * (1.0 - spread_step * k)
+            ask_p = anchor_price * (1.0 + spread_step * k)
+            self.submit_limit_order(aid, "buy", depth_per_level, bid_p)
+            self.submit_limit_order(aid, "sell", depth_per_level, ask_p)
 
     def cancel_order(self, agent_id: str, order_id: str) -> bool:
         aid = str(agent_id)
@@ -332,4 +360,10 @@ class CLOB(Venue):
         )
 
 
-__all__ = ["CLOB", "EmptyBookError"]
+__all__ = [
+    "BOOTSTRAP_AGENT_ID",
+    "CLOB",
+    "DEFAULT_BOOTSTRAP_LEVELS",
+    "DEFAULT_BOOTSTRAP_SPREAD_STEP",
+    "EmptyBookError",
+]
