@@ -70,15 +70,31 @@ class MarketEnvironment:
             return float(notional * self.margin.long_margin_fraction)
         return float(notional * self.margin.short_margin_fraction)
 
-    def _record_maker_fills(self, sim: Simulator, market_id: int) -> None:
-        """Drain maker-side fills from the venue into ``trade_log``.
+    def _record_drained_fills(self, sim: Simulator, market_id: int) -> None:
+        """Drain deferred fills from the venue into ``trade_log``.
 
-        Maker capital was committed when the resting order was placed (its
-        ``CostEntry``), so maker records carry ``capital_committed=0.0`` —
-        never double-charge.
+        Maker legs: capital was committed when the resting order was placed
+        (its submit-time ``CostEntry``), so the record carries
+        ``capital_committed=0.0`` — never double-charge. Taker legs (batch
+        venues only — market orders filled at clear time) charge capital at
+        the fill price now, with a matching ``CostEntry`` so agent budget
+        reconciliation sees the cash flow.
         """
         venue = self.venues[market_id]
         for mf in venue.drain_maker_fills():
+            if mf.liquidity == "taker":
+                cap = self._capital_from_fill(mf.side, mf.quantity, mf.price)
+                self.cost_log.append(
+                    CostEntry(
+                        timestamp=sim.now,
+                        market_id=market_id,
+                        agent_id=int(mf.agent_id),
+                        capital_committed=cap,
+                        fees_paid=mf.fees_paid,
+                    )
+                )
+            else:
+                cap = 0.0
             self.trade_log.append(
                 TradeRecord(
                     timestamp=sim.now,
@@ -87,13 +103,23 @@ class MarketEnvironment:
                     side=mf.side,
                     quantity=mf.quantity,
                     avg_fill_price=mf.price,
-                    fees_paid=0.0,
-                    capital_committed=0.0,
+                    fees_paid=mf.fees_paid,
+                    capital_committed=cap,
                     mid_price_before=self._float_mid(mf.mid_before),
                     mid_price_after=self._float_mid(mf.mid_after),
-                    liquidity="maker",
+                    liquidity=mf.liquidity,
                 )
             )
+
+    def drain_venue_fills(self, sim: Simulator) -> None:
+        """Drain deferred fills from every venue into the logs.
+
+        Batch venues (FBA) produce fills inside ``tick()``; call this right
+        after the venue clock pulse so every clear-time fill is recorded with
+        ``timestamp = clear tick``. No-op for venues with empty buffers.
+        """
+        for market_id in self.venues:
+            self._record_drained_fills(sim, market_id)
 
     def execute_market_order(
         self,
@@ -126,7 +152,7 @@ class MarketEnvironment:
             mid_price_before=self._float_mid(pre_mid),
             mid_price_after=self._float_mid(post_mid),
         )
-        self._record_maker_fills(sim, market_id)
+        self._record_drained_fills(sim, market_id)
         self.cost_log.append(
             CostEntry(
                 timestamp=sim.now,
@@ -178,7 +204,7 @@ class MarketEnvironment:
         post_mid = venue.get_state().mid_price
         # Maker legs first (intermediate mids), aggregate taker record last so
         # the per-tick mid trajectory ends on the post-execution mid.
-        self._record_maker_fills(sim, mid)
+        self._record_drained_fills(sim, mid)
         self.cost_log.append(
             CostEntry(
                 timestamp=sim.now,

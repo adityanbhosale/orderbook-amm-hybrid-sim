@@ -686,3 +686,162 @@ batch venue needs — FBA `tick()` can buffer batch-clear fills (maker AND
 taker) and the environment drains them into `trade_log` the same way; and
 `liquidity` tagging plus per-leg mid bracketing makes maker/taker markout
 well-defined on all venues. Not committed.
+
+---
+
+## Entry 3 — FBA venue (implemented, not committed; sweep untouched)
+
+Date: 2026-06-10. New `venues/fba.py` (`FBAVenue`) implementing the `Venue`
+ABC as a periodic uniform-price call auction over a resting limit book, plus
+`tests/test_fba_venue.py` (12 tests). The incumbent venues' matching code is
+untouched; the only shared-file changes extend the Entry-2 deferred-fill
+channel (details below). The sweep was NOT run and gains no `fba` mechanism
+yet — that's Entry 4 work.
+
+### Cadence and submit semantics
+
+- `FBAVenue(tau_ticks: int, *, fee_rate: float = 0.0)`. `tick()` increments a
+  counter; when `counter % tau_ticks == 0` the batch clears inside `tick()`.
+  No scheduler added: the sweep's venue clock (priority −50, before
+  SIGNAL/DECISION/TRADE) already gives "submits at t land in t+1's clear" for
+  free (verified in the env-wiring test: submit at t=1, records stamped t=2).
+- `submit_limit_order` / `submit_market_order` NEVER fill synchronously. Both
+  return the Entry-1 "accepted, pending" shape:
+  `OrderResult(filled_quantity=0, avg_fill_price=0, remaining_quantity=qty,
+  order_id=<real id>, fees_paid=0)`. **Deliberate deviation:** market orders
+  get a real `order_id` (the `OrderResult` docstring says "None for market
+  orders") because FBA market orders live until the next clear and their
+  clear-time fills need attribution. Shape-legal; `_on_trade` ignores the id
+  for market intents.
+- Resting limits persist across clears until filled/cancelled; partial fills
+  shrink `qty` in place and keep resting. Market orders queue for exactly one
+  clear at `+inf` (buy) / `0.0` (sell) — the sim's open price domain, so they
+  are infinitely elastic — and expire silently if unfilled (nothing recorded,
+  nothing persists). `cancel_order` removes a resting limit; standard.
+
+### Clearing (native reimpl of batch_counterfactual/auction.py)
+
+- Candidate prices = distinct resting/arriving **limit** prices (market
+  orders participate at every price but define no candidates — with both
+  D and S step functions breaking only at limit prices, interior volumes
+  never exceed candidate volumes, so scanning candidates finds the max).
+- Objective: max executable volume `min(D(p), S(p))`; flat max-volume set →
+  clear at the **midpoint** of `[min, max]` of the optimal prices
+  (auction.py ASSUMPTION-1; no tick quantization here — prices are floats,
+  so the raw midpoint is used). All fills in a batch execute at exactly p*.
+- Rationing: participation recomputed at p*; short side fills fully, long
+  side pro-rata with **largest-remainder** rounding, ties by submission
+  order (auction.py ASSUMPTION-2, `_largest_remainder` ported as exact
+  integer arithmetic). To make that exact in float-land, all quantities are
+  quantized to integer multiples of 1e-9 units (`QUANTITY_SCALE = 10**9`) at
+  submit; rationing is pure `int` math — deterministic (no RNG anywhere) and
+  conserving: per-clear Σbuy_qty == Σsell_qty to the quantum. This quantum
+  grid is the one place the float-quantity convention forced a change vs
+  auction.py's integral `Decimal` contracts.
+
+### Resting-book reuse vs mirror
+
+`CLOB`'s book is price-level `dict[float, deque[(agent_id, qty, order_id)]]`
+plus sorted price lists — shaped for price-time-priority *continuous*
+crossing, which FBA doesn't do (no time priority inside a batch; pro-rata at
+the margin). Reusing it wholesale would have meant carrying machinery the
+auction never uses, so the book is **mirrored, not imported**: a flat
+insertion-ordered `dict[order_id -> _BatchOrder(agent_id, side, price, qty_q,
+seq, is_market)]`. No new price type was invented: prices go through the
+CLOB's own `_pkey` (imported from `venues/clob.py`), and `EmptyBookError` is
+imported for `estimate_impact` parity. One consequence of the flat layout:
+best-bid/ask are computed by scan rather than kept sorted (fine at sim scale;
+the CLOB's sorted-level structure would be the optimization if ever needed).
+A `seed_initial_book` with the CLOB's exact ladder shape is provided for the
+Entry-4 sweep builder.
+
+### Deferred-fill recording — drain wiring chosen
+
+Chose **extending the Entry-2 channel** over a new `drain_fills()` method:
+
+- `venues/base.py`: `MakerFill` gains `liquidity: str = "maker"` and
+  `fees_paid: float = 0.0`. Defaults keep every existing CLOB/hybrid
+  construction site and consumer valid — for continuous venues nothing
+  changes byte-wise. FBA emits BOTH legs of every clear through
+  `drain_maker_fills()`, tagged `"maker"` (came from a limit) or `"taker"`
+  (market order); the name now reads as "drain deferred fills" but was kept
+  to avoid churning the ABC and hybrid's delegation.
+- `environment/market_environment.py`:
+  `_record_maker_fills` → `_record_drained_fills`, generalized: maker legs
+  keep the Entry-2 convention (`capital_committed=0`, capital was charged by
+  the submit-time `CostEntry` via `committed_capital_limit`); **taker legs
+  charge capital at clear** — `_capital_from_fill(side, qty, p*)` plus a
+  `CostEntry` at the clear tick, since the submit-time market-intent
+  `CostEntry` was computed off `filled_quantity=0` and charged nothing.
+  Fees: taker legs pay `fee_rate × qty × p*` (default 0, matching the
+  fee-free CLOB); maker legs pay 0 — keeps `trade_log` fees consistent with
+  `cost_log` (which only taker legs touch at clear).
+- New public `MarketEnvironment.drain_venue_fills(sim)`: loops venues and
+  records buffered fills. This is what must run **right after the venue
+  clock pulse** so records get `timestamp = clear tick`. Entry-4 wiring is a
+  one-line change to the sweep's `_pulse`:
+  `v.tick()` for all venues, then `market_env.drain_venue_fills(sim)`.
+  (`_on_trade` also still drains after each submit — harmless for FBA since
+  submits buffer nothing, and it keeps CLOB/hybrid maker recording exactly
+  where it was.)
+
+### Mids / markout validity
+
+`_on_trade`'s `mid_price_before/after` bracket a synchronous submit, which
+for FBA brackets a no-op. The venue therefore captures the **pre-clear book
+mid** (resting best-bid/ask midpoint before fills are applied — note an FBA
+book may be legitimately crossed between clears, giving a well-defined mid
+with negative spread) and the **post-clear mid** (after fills/removals), and
+stamps both on every `MakerFill` in the batch. Test (h) constructs a case
+where submit-time mid = 102, pre-clear mid = 101 (crossed book), post-clear
+mid = 102, and asserts the stamped values are the clear-time ones — post-hoc
+markout off FBA rows is not a no-op. Since FBA submits never fill,
+`_on_trade` appends no taker row for them (`filled_quantity=0` suppression
+from Entry 2), so no submit-time rows pollute
+`build_mid_trajectory_from_trades`.
+
+### ABC completeness
+
+- `get_state()`: mid/best-bid/best-ask/spread from the resting book between
+  clears (agents observe this; spread can be negative when crossed).
+- `estimate_impact(side, qty)`: simulates adding a market order of `qty` to
+  the current pending state (resting limits + queued market orders) and
+  returns the hypothetical clearing price p* — the honest "what price would
+  I get", and the VWAP, since every fill executes at p*. Edge conventions
+  mirror the CLOB: `EmptyBookError` when no opposite resting limits;
+  `inf` (buy) / `0.0` (sell) when the probe can't fully fill.
+
+### Tests (tests/test_fba_venue.py — 12, all pass; suite 22/22)
+
+- (a) hand-computed clear: D = {10@101, 5@100}, S = {8@99, 4@100} → unique
+  max volume 12 at p* = 100; buys rationed 8/4, sells full — asserted with
+  `==`, no tolerance.
+- (b) uniform price: single price per batch; plus the midpoint tie-break
+  case (buy 5@102 vs sell 5@98 → flat interval [98,102] → p* = 100 exactly).
+- (c) conservation: Σbuy == Σsell within each clear, including a pro-rata
+  rationing clear with awkward decimals (3.3/1.4/2.6 vs 5.0) and a
+  multi-price clear.
+- (d) pending semantics: both submit shapes return filled=0/remaining=qty
+  with real order ids; drains empty at counters 1,2 (tau=3); both legs
+  appear exactly at counter % tau == 0 with matching order ids.
+- (e) resting persistence: unfilled limit survives an empty clear; a 4-of-10
+  partial leaves exactly 6 resting (checked in quanta) and fills at a later
+  clear.
+- (f) market expiry: market buy with no opposite interest records nothing
+  and does not haunt later clears.
+- (g) determinism: identical seeded order streams (40 orders, mixed
+  limit/market, interleaved clears) → field-identical fill lists.
+- (h) mids: as above — clear-time pre/post mids stamped, distinct from the
+  submit-time bracket.
+- (i) tau sanity: tau_ticks=1 clears on the first tick with well-formed
+  maker/taker records, drained exactly once.
+- Plus: `estimate_impact` returns the hypothetical p* / inf / EmptyBookError;
+  and the env-wiring test mirrors the sweep's priority −50 pulse + drain,
+  asserting timestamp = clear tick (submit t=1 → records t=2), maker
+  capital 0 at clear, taker capital `qty·p*` at clear, and the exact
+  `cost_log` sequence [(1,maker-limit), (1,market-submit, 0 capital),
+  (2,taker-clear)].
+
+Existing suite unchanged and green (the `MakerFill`/environment extensions
+are default-compatible: CLOB/hybrid records are byte-identical). Sweep not
+run; nothing committed.

@@ -3,6 +3,7 @@
 from venues.base import MakerFill, OrderResult, Venue, VenueState
 from venues.clob import BOOTSTRAP_AGENT_ID, CLOB, EmptyBookError
 from venues.constant_product import ConstantProductAMM
+from venues.fba import FBAVenue
 from venues.hybrid import HybridLpConfig, HybridVenue, LP_AGENT_ID
 
 __all__ = [
@@ -10,6 +11,7 @@ __all__ = [
     "CLOB",
     "ConstantProductAMM",
     "EmptyBookError",
+    "FBAVenue",
     "HybridLpConfig",
     "HybridVenue",
     "LP_AGENT_ID",
