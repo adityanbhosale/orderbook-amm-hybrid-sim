@@ -6,7 +6,7 @@ from bisect import insort
 from collections import deque
 from typing import Optional
 
-from venues.base import OrderResult, Venue, VenueState
+from venues.base import MakerFill, OrderResult, Venue, VenueState
 
 
 class EmptyBookError(RuntimeError):
@@ -37,6 +37,7 @@ class CLOB(Venue):
         self._asks: dict[float, deque] = {}
         self._order_counter = 0
         self._tick = 0
+        self._maker_fills: list[MakerFill] = []
 
     def _gen_order_id(self) -> str:
         self._order_counter += 1
@@ -47,6 +48,38 @@ class CLOB(Venue):
 
     def _best_ask(self) -> Optional[float]:
         return self._ask_prices[0] if self._ask_prices else None
+
+    def _mid(self) -> Optional[float]:
+        bb, ba = self._best_bid(), self._best_ask()
+        if bb is None or ba is None:
+            return None
+        return (bb + ba) / 2.0
+
+    def drain_maker_fills(self) -> list[MakerFill]:
+        out = self._maker_fills
+        self._maker_fills = []
+        return out
+
+    def _record_maker_fill(
+        self,
+        agent_id: str,
+        maker_side: str,
+        quantity: float,
+        price: float,
+        order_id: str,
+        mid_before: Optional[float],
+    ) -> None:
+        self._maker_fills.append(
+            MakerFill(
+                agent_id=agent_id,
+                side=maker_side,
+                quantity=quantity,
+                price=price,
+                order_id=order_id,
+                mid_before=mid_before,
+                mid_after=self._mid(),
+            )
+        )
 
     def get_state(self) -> VenueState:
         bb, ba = self._best_bid(), self._best_ask()
@@ -222,6 +255,7 @@ class CLOB(Venue):
                 continue
             ag, q, oid = dq[0]
             take = min(remaining, q)
+            mid_before = self._mid()
             tot_cost += take * ap
             filled += take
             remaining -= take
@@ -232,6 +266,7 @@ class CLOB(Venue):
             if not dq:
                 self._ask_prices.pop(0)
                 del self._asks[ap]
+            self._record_maker_fill(ag, "sell", take, ap, oid, mid_before)
         unfilled = qty - filled
         return OrderResult(
             filled_quantity=filled,
@@ -258,6 +293,7 @@ class CLOB(Venue):
                 continue
             ag, q, oid = dq[0]
             take = min(remaining, q)
+            mid_before = self._mid()
             tot_recv += take * bp
             filled += take
             remaining -= take
@@ -268,6 +304,7 @@ class CLOB(Venue):
             if not dq:
                 self._bid_prices.pop()
                 del self._bids[bp]
+            self._record_maker_fill(ag, "buy", take, bp, oid, mid_before)
         unfilled = qty - filled
         return OrderResult(
             filled_quantity=filled,
@@ -294,6 +331,7 @@ class CLOB(Venue):
                 continue
             ag, q, oid = dq[0]
             take = min(remaining, q)
+            mid_before = self._mid()
             tot_cost += take * ap
             filled += take
             remaining -= take
@@ -304,6 +342,7 @@ class CLOB(Venue):
             if not dq:
                 self._ask_prices.pop(0)
                 del self._asks[ap]
+            self._record_maker_fill(ag, "sell", take, ap, oid, mid_before)
         resting_oid: Optional[str] = None
         rest_qty = remaining
         if rest_qty > 1e-12:
@@ -335,6 +374,7 @@ class CLOB(Venue):
                 continue
             ag, q, oid = dq[0]
             take = min(remaining, q)
+            mid_before = self._mid()
             tot_recv += take * bp
             filled += take
             remaining -= take
@@ -345,6 +385,7 @@ class CLOB(Venue):
             if not dq:
                 self._bid_prices.pop()
                 del self._bids[bp]
+            self._record_maker_fill(ag, "buy", take, bp, oid, mid_before)
         resting_oid: Optional[str] = None
         rest_qty = remaining
         if rest_qty > 1e-12:

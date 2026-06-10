@@ -15,7 +15,7 @@ from environment.margin import MarginSpec, committed_capital, committed_capital_
 from environment.market_environment import MarketEnvironment
 from environment.signals import Signal
 from environment.simulator import Simulator, schedule_poisson
-from environment.trade_records import TradeIntent, TradeRecord
+from environment.trade_records import CostEntry, TradeIntent, TradeRecord
 from environment.trading_utils import (
     confidence_weighted_size,
     downsize_limit_quantity_for_capital,
@@ -31,6 +31,7 @@ __all__ = [
     "Signal",
     "Simulator",
     "schedule_poisson",
+    "CostEntry",
     "TradeIntent",
     "TradeRecord",
     "MarginSpec",

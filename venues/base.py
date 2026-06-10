@@ -21,6 +21,24 @@ class OrderResult:
     fees_paid: float
 
 
+@dataclass(frozen=True)
+class MakerFill:
+    """One resting order (partially) consumed by an incoming order.
+
+    Produced inside the venue's matching loops and buffered until
+    ``drain_maker_fills`` is called, so the environment can record the maker
+    side of each execution symmetrically with the taker side.
+    """
+
+    agent_id: str
+    side: str                    # maker's side: opposite of the incoming order
+    quantity: float              # quantity consumed from the resting order
+    price: float                 # execution price = the resting limit price
+    order_id: str
+    mid_before: Optional[float]  # venue mid immediately before this consumption
+    mid_after: Optional[float]   # venue mid immediately after this consumption
+
+
 @dataclass
 class VenueState:
     """Snapshot of venue state, returned to agents on observation."""
@@ -78,3 +96,12 @@ class Venue(ABC):
     def tick(self) -> None:
         """Advance venue by one timestep. Used for time-dependent state."""
         ...
+
+    def drain_maker_fills(self) -> list[MakerFill]:
+        """Return and clear maker-side fills produced since the last drain.
+
+        Venues without resting orders (pure AMMs) have no maker side and use
+        this default. Order-book venues override it so the environment can
+        record maker executions symmetrically with taker executions.
+        """
+        return []

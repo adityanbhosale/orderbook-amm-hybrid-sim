@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Sequence, Union
 
-from environment.trade_records import TradeRecord
+from environment.trade_records import CostEntry, TradeRecord
 
 
 @dataclass
@@ -14,7 +15,7 @@ class CapitalSaturationResult:
 
 
 def fraction_exhausted_before_convergence(
-    records: list[TradeRecord],
+    records: Sequence[Union[TradeRecord, CostEntry]],
     *,
     informed_agent_ids: set[int],
     budgets: dict[int, float],
@@ -27,6 +28,10 @@ def fraction_exhausted_before_convergence(
     Count informed agents exhausted strictly before ``convergence_tick``.
     If ``convergence_tick`` is None, compare exhaustion tick to final tick only
     (no mid-convergence benchmark).
+
+    Pass ``MarketEnvironment.cost_log`` (one entry per intent) for exact
+    capital flows; ``trade_log`` rows also work but, since the maker-fill
+    recording fix, no longer include capital for fully-resting limit orders.
     """
     # chronological
     sorted_recs = sorted(records, key=lambda r: (r.timestamp, r.market_id))

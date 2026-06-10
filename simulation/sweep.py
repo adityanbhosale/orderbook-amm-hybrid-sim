@@ -499,7 +499,7 @@ def run_single_simulation(
     )
 
     cap_sat = fraction_exhausted_before_convergence(
-        records,
+        list(market_env.cost_log),
         informed_agent_ids=informed_ids,
         budgets=budgets_map,
         convergence_tick=conv.convergence_tick,

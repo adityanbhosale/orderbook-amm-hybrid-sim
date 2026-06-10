@@ -33,7 +33,13 @@ class TradeIntent:
 
 @dataclass(frozen=True)
 class TradeRecord:
-    """One executed trade (actual fills)."""
+    """One executed trade (actual fills).
+
+    Every execution produces one "taker" record (the incoming order) and, on
+    order-book venues, one "maker" record per resting order consumed. Maker
+    records carry ``capital_committed=0.0`` — the maker's capital was already
+    committed when the resting limit order was placed (see ``CostEntry``).
+    """
 
     timestamp: int
     market_id: int
@@ -45,3 +51,20 @@ class TradeRecord:
     capital_committed: float
     mid_price_before: float
     mid_price_after: float
+    liquidity: str = "taker"  # "taker" | "maker"
+
+
+@dataclass(frozen=True)
+class CostEntry:
+    """Capital/fee cash flow for one processed ``TradeIntent``.
+
+    Exactly one entry per intent (even if nothing filled, e.g. a fully
+    resting limit order). ``AgentPopulation._sync_costs`` reconciles agent
+    budgets from this log; ``trade_log`` holds only actual fills.
+    """
+
+    timestamp: int
+    market_id: int
+    agent_id: int
+    capital_committed: float
+    fees_paid: float

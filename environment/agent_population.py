@@ -50,8 +50,10 @@ class PopulationAgent(Protocol):
 class AgentPopulation:
     """
     Registers ``signal``, ``agent_decision``, ``agent_review``, ``noise_trade``
-    handlers. Capital is reconciled from ``MarketEnvironment.trade_log``:
-    each agent's ``deployed`` increases by ``capital_committed + fees_paid``.
+    handlers. Capital is reconciled from ``MarketEnvironment.cost_log`` (one
+    entry per processed intent): each agent's ``deployed`` increases by
+    ``capital_committed + fees_paid``. Maker-side fill records in
+    ``trade_log`` carry no capital and do not affect reconciliation.
     """
 
     SIGNAL_EVENT: str = InformationEnvironment.SIGNAL_EVENT
@@ -108,7 +110,7 @@ class AgentPopulation:
         self._sync_costs()
 
     def _sync_costs(self) -> None:
-        log = self._market_env.trade_log
+        log = self._market_env.cost_log
         if self._log_cursor == len(log):
             return
         affected: set[int] = set()

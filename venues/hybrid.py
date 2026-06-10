@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from venues.base import OrderResult, Venue, VenueState
+from venues.base import MakerFill, OrderResult, Venue, VenueState
 from venues.clob import CLOB
 
 LP_AGENT_ID = "-2"
@@ -67,6 +67,9 @@ class HybridVenue(Venue):
 
     def estimate_impact(self, side: str, quantity: float) -> float:
         return self._clob.estimate_impact(side, quantity)
+
+    def drain_maker_fills(self) -> list[MakerFill]:
+        return self._clob.drain_maker_fills()
 
 
 __all__ = ["HybridLpConfig", "HybridVenue", "LP_AGENT_ID"]

@@ -11,7 +11,7 @@ import math
 from environment.events import Event
 from environment.margin import MarginSpec, committed_capital_limit
 from environment.simulator import Simulator
-from environment.trade_records import TradeIntent, TradeRecord
+from environment.trade_records import CostEntry, TradeIntent, TradeRecord
 from venues.base import Venue, VenueState
 
 
@@ -29,7 +29,10 @@ class MarketEnvironment:
         if not venues:
             raise ValueError("venues must be non-empty")
         self.venues = dict(venues)
+        #: Actual fills only (taker and maker sides); no zero-quantity rows.
         self.trade_log: list[TradeRecord] = []
+        #: One entry per processed intent; drives agent capital reconciliation.
+        self.cost_log: list[CostEntry] = []
         self.margin = margin or MarginSpec()
         self._registered = False
 
@@ -67,6 +70,31 @@ class MarketEnvironment:
             return float(notional * self.margin.long_margin_fraction)
         return float(notional * self.margin.short_margin_fraction)
 
+    def _record_maker_fills(self, sim: Simulator, market_id: int) -> None:
+        """Drain maker-side fills from the venue into ``trade_log``.
+
+        Maker capital was committed when the resting order was placed (its
+        ``CostEntry``), so maker records carry ``capital_committed=0.0`` —
+        never double-charge.
+        """
+        venue = self.venues[market_id]
+        for mf in venue.drain_maker_fills():
+            self.trade_log.append(
+                TradeRecord(
+                    timestamp=sim.now,
+                    market_id=market_id,
+                    agent_id=int(mf.agent_id),
+                    side=mf.side,
+                    quantity=mf.quantity,
+                    avg_fill_price=mf.price,
+                    fees_paid=0.0,
+                    capital_committed=0.0,
+                    mid_price_before=self._float_mid(mf.mid_before),
+                    mid_price_after=self._float_mid(mf.mid_after),
+                    liquidity="maker",
+                )
+            )
+
     def execute_market_order(
         self,
         sim: Simulator,
@@ -98,7 +126,18 @@ class MarketEnvironment:
             mid_price_before=self._float_mid(pre_mid),
             mid_price_after=self._float_mid(post_mid),
         )
-        self.trade_log.append(rec)
+        self._record_maker_fills(sim, market_id)
+        self.cost_log.append(
+            CostEntry(
+                timestamp=sim.now,
+                market_id=market_id,
+                agent_id=agent_id,
+                capital_committed=cap,
+                fees_paid=res.fees_paid,
+            )
+        )
+        if res.filled_quantity > 0.0:
+            self.trade_log.append(rec)
         return rec
 
     def _on_trade(self, sim: Simulator, event: Event) -> None:
@@ -137,17 +176,31 @@ class MarketEnvironment:
             raise ValueError(f"unsupported order_type {payload.order_type!r}")
 
         post_mid = venue.get_state().mid_price
-        self.trade_log.append(
-            TradeRecord(
+        # Maker legs first (intermediate mids), aggregate taker record last so
+        # the per-tick mid trajectory ends on the post-execution mid.
+        self._record_maker_fills(sim, mid)
+        self.cost_log.append(
+            CostEntry(
                 timestamp=sim.now,
                 market_id=mid,
                 agent_id=payload.agent_id,
-                side=payload.side,
-                quantity=res.filled_quantity,
-                avg_fill_price=res.avg_fill_price,
-                fees_paid=res.fees_paid,
                 capital_committed=cap,
-                mid_price_before=self._float_mid(pre_mid),
-                mid_price_after=self._float_mid(post_mid),
+                fees_paid=res.fees_paid,
             )
         )
+        if res.filled_quantity > 0.0:
+            self.trade_log.append(
+                TradeRecord(
+                    timestamp=sim.now,
+                    market_id=mid,
+                    agent_id=payload.agent_id,
+                    side=payload.side,
+                    quantity=res.filled_quantity,
+                    avg_fill_price=res.avg_fill_price,
+                    fees_paid=res.fees_paid,
+                    capital_committed=cap,
+                    mid_price_before=self._float_mid(pre_mid),
+                    mid_price_after=self._float_mid(post_mid),
+                    liquidity="taker",
+                )
+            )
