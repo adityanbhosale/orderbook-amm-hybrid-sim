@@ -16,7 +16,10 @@ import pandas as pd
 
 from agents.event_noise import EventDrivenNoiseAgent
 from agents.informed_aggregated import AggregatedEvidenceAgent
-from agents.informed_joint_factor import make_joint_factor_agent
+from agents.informed_joint_factor import (
+    JointFactorFairValueAgent,
+    make_joint_factor_agent,
+)
 from agents.informed_naive import NaiveGaussianBeliefAgent
 from agents.informed_tail import TailAwareGaussianBeliefAgent
 from environment import (
@@ -34,7 +37,7 @@ from environment.information import ClusterSpec
 from environment.information_helpers import base_log_levels_from_truth
 from metrics.capital import fraction_exhausted_before_convergence
 from metrics.convergence import build_mid_trajectory_from_trades, convergence_metrics
-from metrics.rent import rent_and_pnl
+from metrics.rent import pnl_by_role, rent_and_pnl
 from venues.clob import CLOB
 from venues.constant_product import ConstantProductAMM
 from venues.hybrid import HybridLpConfig, HybridVenue
@@ -58,6 +61,55 @@ SIGNAL_REGIMES: dict[SignalRegimeName, dict[str, float]] = {
 }
 
 ANCHOR_DISPLACEMENT_STD = 0.01
+
+#: Latency role map. FAST agents update beliefs (and act) on a shorter
+#: observation_delay than SLOW agents; NOISE is untouched (Poisson path, no
+#: observation_delay). Used both for delay assignment and PnL bucketing.
+FAST_ROLE_CLASSES = (TailAwareGaussianBeliefAgent, JointFactorFairValueAgent)
+SLOW_ROLE_CLASSES = (NaiveGaussianBeliefAgent, AggregatedEvidenceAgent)
+
+ROLE_FAST = "fast_informed"
+ROLE_SLOW = "slow_informed"
+ROLE_NOISE = "noise"
+
+
+@dataclass(frozen=True)
+class RoleDelayConfig:
+    """Per-role ``observation_delay`` in integer ticks.
+
+    Default ``fast=slow=0`` reproduces the pre-latency baseline exactly (every
+    informed agent already constructed with ``observation_delay=0``).
+    Differentiated delays are an opt-in axis: set ``fast < slow`` to give the
+    fast role a timing-of-belief-update edge. ``EventDrivenNoiseAgent`` never
+    receives a delay (it has no ``observation_delay`` field).
+    """
+
+    fast: int = 0
+    slow: int = 0
+
+    def __post_init__(self) -> None:
+        if self.fast < 0 or self.slow < 0:
+            raise ValueError("role delays must be non-negative")
+
+    def delay_for_class(self, agent_obj: object) -> int:
+        if isinstance(agent_obj, FAST_ROLE_CLASSES):
+            return self.fast
+        if isinstance(agent_obj, SLOW_ROLE_CLASSES):
+            return self.slow
+        return 0
+
+
+def _role_by_agent_id(agents: Sequence[PopulationAgent]) -> dict[int, str]:
+    """Map each agent_id to its latency role label for PnL bucketing."""
+    roles: dict[int, str] = {}
+    for a in agents:
+        if isinstance(a, FAST_ROLE_CLASSES):
+            roles[a.agent_id] = ROLE_FAST
+        elif isinstance(a, SLOW_ROLE_CLASSES):
+            roles[a.agent_id] = ROLE_SLOW
+        elif isinstance(a, EventDrivenNoiseAgent):
+            roles[a.agent_id] = ROLE_NOISE
+    return roles
 
 
 def _anchor_displacements(
@@ -204,7 +256,10 @@ def build_agents_diverse(
     cross_weights: dict[tuple[int, int], float],
     agent_rng: np.random.Generator,
     n_markets: int,
+    *,
+    delays: RoleDelayConfig | None = None,
 ) -> list[PopulationAgent]:
+    delays = delays or RoleDelayConfig()
     init_log = _opening_log_means(market_env, info_env, n_markets)
     ts = _trade_size_for_budget(budget)
     rev = 5000
@@ -224,7 +279,7 @@ def build_agents_diverse(
         budget=budget,
         market_ids=tuple(range(n_markets)),
         initial_log_fair_mean=init_log.copy(),
-        observation_delay=0,
+        observation_delay=delays.slow,
         review_interval=rev,
         prior_precision=3.0,
         signal_precision_assumed=0.55,
@@ -237,7 +292,7 @@ def build_agents_diverse(
         budget=budget,
         market_ids=tuple(range(n_markets)),
         base_log_levels=tail_bases,
-        observation_delay=0,
+        observation_delay=delays.fast,
         review_interval=rev,
         prior_precision=1.2,
         disagreement_threshold_log=thresh,
@@ -251,7 +306,7 @@ def build_agents_diverse(
         observed_markets=tuple(range(n_markets)),
         cross_weights=cross_weights,
         initial_log_fair_mean=init_log.copy(),
-        observation_delay=0,
+        observation_delay=delays.slow,
         review_interval=rev,
         prior_precision=2.0,
         signal_precision_assumed=0.85,
@@ -266,7 +321,7 @@ def build_agents_diverse(
         observed_markets=tuple(range(n_markets)),
         loadings_matrix=loadings_matrix,
         initial_mid_by_market=mids_map,
-        observation_delay=0,
+        observation_delay=delays.fast,
         review_interval=rev,
         prior_precision_scale=1.0,
         signal_noise_inflation=1.0,
@@ -292,7 +347,10 @@ def build_agents_naive_dominated(
     info_env: InformationEnvironment,
     n_markets: int,
     n_naive: int = 5,
+    *,
+    delays: RoleDelayConfig | None = None,
 ) -> list[PopulationAgent]:
+    delays = delays or RoleDelayConfig()
     init_log = _opening_log_means(market_env, info_env, n_markets)
     ts = _trade_size_for_budget(budget)
     rev = 4500
@@ -306,7 +364,7 @@ def build_agents_naive_dominated(
                 budget=budget,
                 market_ids=tuple(range(n_markets)),
                 initial_log_fair_mean=init_log.copy(),
-                observation_delay=0,
+                observation_delay=delays.slow,
                 review_interval=rev,
                 prior_precision=2.5 + 0.1 * i,
                 signal_precision_assumed=0.5,
@@ -347,9 +405,11 @@ def run_single_simulation(
     reserve_x: float = 8000.0,
     rel_convergence_band: float = 0.02,
     naive_dominated_count: int = 5,
+    observation_delays: RoleDelayConfig | None = None,
 ) -> dict[str, Any]:
     if mechanism not in ("amm", "clob", "hybrid"):
         raise ValueError(f"unknown mechanism {mechanism!r}")
+    delays = observation_delays or RoleDelayConfig()
     budget = CAPITAL_BANDS[capital_band]
     sig = SIGNAL_REGIMES[signal_regime]
 
@@ -403,10 +463,12 @@ def run_single_simulation(
             cw,
             agent_rng,
             n_markets,
+            delays=delays,
         )
     else:
         agents = build_agents_naive_dominated(
-            budget, market_env, info_env, n_markets, naive_dominated_count
+            budget, market_env, info_env, n_markets, naive_dominated_count,
+            delays=delays,
         )
 
     population = AgentPopulation(agents)
@@ -498,6 +560,13 @@ def run_single_simulation(
         pool_reserves_end=pool_end,
     )
 
+    role_map = _role_by_agent_id(agents)
+    role_pnl = pnl_by_role(
+        records,
+        fair_prices_by_market=fair_map,
+        role_by_agent_id=role_map,
+    )
+
     cap_sat = fraction_exhausted_before_convergence(
         list(market_env.cost_log),
         informed_agent_ids=informed_ids,
@@ -533,6 +602,11 @@ def run_single_simulation(
         "frac_informed_exhausted_before_convergence": cap_sat.fraction_informed_exhausted_before_convergence,
         "n_informed_agents": cap_sat.n_informed,
         "n_informed_exhausted": cap_sat.n_exhausted,
+        "delay_fast": delays.fast,
+        "delay_slow": delays.slow,
+        "pnl_fast_informed": role_pnl.get(ROLE_FAST, 0.0),
+        "pnl_slow_informed": role_pnl.get(ROLE_SLOW, 0.0),
+        "pnl_noise_role": role_pnl.get(ROLE_NOISE, 0.0),
     }
     return {
         "summary": out,

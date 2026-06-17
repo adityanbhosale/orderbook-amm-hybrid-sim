@@ -31,6 +31,29 @@ def _trade_mtm_pnl(rec: TradeRecord, fair_end: float) -> float:
     return float(rec.quantity * (rec.avg_fill_price - fair_end))
 
 
+def pnl_by_role(
+    records: list[TradeRecord],
+    *,
+    fair_prices_by_market: dict[int, float],
+    role_by_agent_id: dict[int, str],
+) -> dict[str, float]:
+    """Bucket per-agent terminal mark-to-market PnL by role.
+
+    Uses the same per-fill ``_trade_mtm_pnl`` as :func:`rent_and_pnl` (terminal
+    fair, static log-truth), so role buckets are consistent with the existing
+    informed-vs-noise outputs. ``role_by_agent_id`` maps each agent_id to a
+    role label; agents absent from the map are ignored. Returns a dict keyed
+    by every role label present in ``role_by_agent_id`` (zero if no fills).
+    """
+    out: dict[str, float] = {role: 0.0 for role in set(role_by_agent_id.values())}
+    for r in records:
+        role = role_by_agent_id.get(r.agent_id)
+        if role is None:
+            continue
+        out[role] += _trade_mtm_pnl(r, fair_prices_by_market[r.market_id])
+    return out
+
+
 def lp_rent_cp_amm_per_pool(
     x0: float,
     y0: float,
@@ -91,6 +114,7 @@ def rent_and_pnl(
 __all__ = [
     "RentPnlResult",
     "lp_rent_cp_amm_per_pool",
+    "pnl_by_role",
     "rent_and_pnl",
     "rent_efficiency_stable",
 ]
