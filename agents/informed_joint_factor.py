@@ -44,6 +44,11 @@ class JointFactorFairValueAgent:
     confidence_ceiling: float = 4.0
     safety_margin: float = 1.2
     min_trade_quantity: float = 1e-6
+    #: Belief process variance per unit time (matrix analog of the scalar q).
+    #: 0 = stationary target (default, byte-identical to the precision-only
+    #: matrix update). >0 inflates the factor covariance by q·Δt before each
+    #: update so the joint posterior tracks a moving target instead of freezing.
+    q: float = 0.0
 
     deployed: float = field(default=0.0, init=False)
     pending_cost: float = field(default=0.0, init=False)
@@ -52,6 +57,9 @@ class JointFactorFairValueAgent:
     _eta: np.ndarray = field(init=False)
     _observed_set: set[int] = field(default_factory=set, init=False)
     _primary_set: set[int] = field(default_factory=set, init=False)
+    #: tick of the last posterior update (single, shared factor posterior);
+    #: -1 = never updated. Δt = now - this drives the q>0 covariance inflation.
+    _last_update_tick: int = field(default=-1, init=False)
     arrival_rate_per_unit: float = field(default=0.0, init=False)
 
     def __post_init__(self) -> None:
@@ -73,6 +81,8 @@ class JointFactorFairValueAgent:
             raise ValueError("trade_size must be positive")
         if self.safety_margin < 1.0:
             raise ValueError("safety_margin must be >= 1.0")
+        if self.q < 0.0:
+            raise ValueError("process variance q must be non-negative")
 
         self.market_ids = tuple(self.market_ids)
         self.observed_markets = tuple(self.observed_markets)
@@ -133,12 +143,36 @@ class JointFactorFairValueAgent:
     def _prior_precision_sizing(self) -> float:
         return self.prior_precision_scale * max(self._k, 1)
 
-    def update_posterior(self, signal: Signal) -> None:
+    def _decay_information(self, qdt: float) -> None:
+        """Random-walk predict step on the factor posterior (mean preserved).
+
+        Works in COVARIANCE form, which is PSD-preserving by construction:
+        Σ = Λ⁻¹ (PD, since Λ is PD), inflate Σ ← Σ + qdt·I (adding a PD diagonal
+        keeps it PD), then Λ ← Σ⁻¹ (inverse of PD is PD). The mean μ = Σ η is
+        held fixed and η rebuilt as Λ·μ. Symmetrized for fp hygiene. Only ever
+        called on the q>0 path, so it never perturbs the q=0 baseline.
+        """
+        sigma = np.linalg.inv(self._Lambda)
+        mu = sigma @ self._eta
+        sigma = sigma + qdt * np.eye(self._k)
+        lam = np.linalg.inv(sigma)
+        lam = 0.5 * (lam + lam.T)
+        self._Lambda = lam
+        self._eta = lam @ mu
+
+    def update_posterior(self, signal: Signal, now: int) -> None:
         j = signal.market_id
         if j not in self._observed_set:
             return
         if signal.noise_std <= 0:
             return
+        dt = 0.0 if self._last_update_tick < 0 else float(now - self._last_update_tick)
+        self._last_update_tick = now
+        if self.q > 0.0 and dt > 0.0:
+            # Inflate factor covariance by q·Δt for elapsed time, before
+            # absorbing this signal. Skipped entirely at q=0 (no inversion
+            # round-trip) so the matrix arithmetic below is byte-identical.
+            self._decay_information(self.q * dt)
         beta = self.loadings[j]
         sigma_eff = signal.noise_std * self.signal_noise_inflation
         tau_j = 1.0 / (sigma_eff * sigma_eff)
@@ -152,7 +186,7 @@ class JointFactorFairValueAgent:
         signal: Signal,
         market_env: MarketEnvironment,
     ) -> TradeIntent | None:
-        self.update_posterior(signal)
+        self.update_posterior(signal, sim.now)
         if signal.market_id not in self._primary_set:
             return None
         impl = self.implied_log_fair(signal.market_id)

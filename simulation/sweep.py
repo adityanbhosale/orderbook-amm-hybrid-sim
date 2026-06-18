@@ -339,6 +339,7 @@ def build_agents_diverse(
         disagreement_threshold_log=thresh,
         trade_size=ts,
         safety_margin=safety,
+        q=belief_process_var,
     )
     noise = EventDrivenNoiseAgent(
         agent_id=NOISE_AGENT_ID,
