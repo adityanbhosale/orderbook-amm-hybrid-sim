@@ -22,6 +22,7 @@ from agents.informed_joint_factor import (
 )
 from agents.informed_naive import NaiveGaussianBeliefAgent
 from agents.informed_tail import TailAwareGaussianBeliefAgent
+from agents.lp_market_maker import LpMarketMakerAgent
 from environment import (
     AgentPopulation,
     InformationConfig,
@@ -43,11 +44,12 @@ from venues.constant_product import ConstantProductAMM
 from venues.hybrid import HybridLpConfig, HybridVenue
 
 MechanismName = Literal["amm", "clob", "hybrid"]
-MixName = Literal["diverse", "naive_dominated"]
+MixName = Literal["diverse", "naive_dominated", "lp_vs_informed"]
 SignalRegimeName = Literal["low", "high"]
 CapitalBandName = Literal["low", "mid", "high"]
 
 NOISE_AGENT_ID = 99
+LP_AGENT_ID = 50
 
 CAPITAL_BANDS: dict[CapitalBandName, float] = {
     "low": 100.0,
@@ -71,6 +73,9 @@ SLOW_ROLE_CLASSES = (NaiveGaussianBeliefAgent, AggregatedEvidenceAgent)
 ROLE_FAST = "fast_informed"
 ROLE_SLOW = "slow_informed"
 ROLE_NOISE = "noise"
+#: The §5.4 liquidity provider. Neither fast/slow-informed nor noise: it quotes
+#: two-sided and is adversely selected, so its PnL is bucketed separately.
+ROLE_LP = "lp"
 
 
 @dataclass(frozen=True)
@@ -109,6 +114,8 @@ def _role_by_agent_id(agents: Sequence[PopulationAgent]) -> dict[int, str]:
             roles[a.agent_id] = ROLE_SLOW
         elif isinstance(a, EventDrivenNoiseAgent):
             roles[a.agent_id] = ROLE_NOISE
+        elif isinstance(a, LpMarketMakerAgent):
+            roles[a.agent_id] = ROLE_LP
     return roles
 
 
@@ -387,8 +394,58 @@ def build_agents_naive_dominated(
     return agents
 
 
+def build_agents_lp_vs_informed(
+    budget: float,
+    market_env: MarketEnvironment,
+    info_env: InformationEnvironment,
+    loadings_matrix: np.ndarray,
+    cross_weights: dict[tuple[int, int], float],
+    agent_rng: np.random.Generator,
+    n_markets: int,
+    *,
+    delays: RoleDelayConfig | None = None,
+    lp_observation_delay: int = 50,
+    lp_half_spread_pct: float = 0.0005,
+    lp_quote_size: float | None = None,
+    lp_budget: float = 20_000.0,
+) -> list[PopulationAgent]:
+    """The known diverse informed population PLUS one two-sided LP.
+
+    Reuses ``build_agents_diverse`` verbatim for the informed/noise agents (ids
+    1-4, 99) so this is a clean "diverse + a bleeding LP" world for the τ-curve,
+    then adds ``LpMarketMakerAgent`` at ``LP_AGENT_ID``. The LP's
+    ``observation_delay`` is its own knob (NOT part of ``RoleDelayConfig``) and
+    defaults LONGER than the FAST informed delay so its quotes are staler (§5.2).
+    """
+    delays = delays or RoleDelayConfig()
+    base = build_agents_diverse(
+        budget,
+        market_env,
+        info_env,
+        loadings_matrix,
+        cross_weights,
+        agent_rng,
+        n_markets,
+        delays=delays,
+    )
+    init_log = _opening_log_means(market_env, info_env, n_markets)
+    ts = _trade_size_for_budget(budget)
+    quote = lp_quote_size if lp_quote_size is not None else max(2.0, ts)
+    lp = LpMarketMakerAgent(
+        agent_id=LP_AGENT_ID,
+        budget=lp_budget,
+        market_ids=tuple(range(n_markets)),
+        initial_log_fair_mean=init_log.copy(),
+        observation_delay=lp_observation_delay,
+        review_interval=500,
+        half_spread_pct=lp_half_spread_pct,
+        quote_size=quote,
+    )
+    return [*base, lp]
+
+
 def _informed_ids_for_mix(mix: MixName, n_naive: int = 5) -> set[int]:
-    if mix == "diverse":
+    if mix in ("diverse", "lp_vs_informed"):
         return {1, 2, 3, 4}
     return set(range(1, n_naive + 1))
 
@@ -406,6 +463,10 @@ def run_single_simulation(
     rel_convergence_band: float = 0.02,
     naive_dominated_count: int = 5,
     observation_delays: RoleDelayConfig | None = None,
+    lp_observation_delay: int = 50,
+    lp_half_spread_pct: float = 0.0005,
+    lp_quote_size: float | None = None,
+    lp_budget: float = 20_000.0,
 ) -> dict[str, Any]:
     if mechanism not in ("amm", "clob", "hybrid"):
         raise ValueError(f"unknown mechanism {mechanism!r}")
@@ -464,6 +525,21 @@ def run_single_simulation(
             agent_rng,
             n_markets,
             delays=delays,
+        )
+    elif mix == "lp_vs_informed":
+        agents = build_agents_lp_vs_informed(
+            budget,
+            market_env,
+            info_env,
+            loadings_matrix,
+            cw,
+            agent_rng,
+            n_markets,
+            delays=delays,
+            lp_observation_delay=lp_observation_delay,
+            lp_half_spread_pct=lp_half_spread_pct,
+            lp_quote_size=lp_quote_size,
+            lp_budget=lp_budget,
         )
     else:
         agents = build_agents_naive_dominated(
@@ -567,6 +643,18 @@ def run_single_simulation(
         role_by_agent_id=role_map,
     )
 
+    # LP observability (0 / 0.0 for mixes without an LP). n_lp_fills is the
+    # inter-agent fill channel count; the second-half fraction is the G3
+    # solvency proxy (an LP that exhausted early would have ~0 here).
+    lp_records = [r for r in records if r.agent_id == LP_AGENT_ID]
+    n_lp_fills = len(lp_records)
+    _half = until_ts / 2.0
+    lp_frac_fills_second_half = (
+        sum(1 for r in lp_records if r.timestamp >= _half) / n_lp_fills
+        if n_lp_fills
+        else 0.0
+    )
+
     cap_sat = fraction_exhausted_before_convergence(
         list(market_env.cost_log),
         informed_agent_ids=informed_ids,
@@ -607,6 +695,9 @@ def run_single_simulation(
         "pnl_fast_informed": role_pnl.get(ROLE_FAST, 0.0),
         "pnl_slow_informed": role_pnl.get(ROLE_SLOW, 0.0),
         "pnl_noise_role": role_pnl.get(ROLE_NOISE, 0.0),
+        "pnl_lp": role_pnl.get(ROLE_LP, 0.0),
+        "n_lp_fills": n_lp_fills,
+        "lp_frac_fills_second_half": lp_frac_fills_second_half,
     }
     return {
         "summary": out,
