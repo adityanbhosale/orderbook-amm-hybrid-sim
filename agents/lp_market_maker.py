@@ -61,6 +61,11 @@ class LpMarketMakerAgent:
     quote_size: float = 4.0
     prior_precision: float = 1.0
     signal_precision_assumed: float = 0.7
+    #: Belief process variance per unit time. 0 = stationary target (default,
+    #: byte-identical to the pre-Kalman filter). >0 decays prior precision by
+    #: q·Δt between updates so the (deliberately stale) LP belief tracks a moving
+    #: target instead of freezing. Δt is ticks since the LP last updated this market.
+    q: float = 0.0
 
     # Protocol fields the LP does not use through the belief/noise paths.
     arrival_rate_per_unit: float = field(default=0.0, init=False)
@@ -70,6 +75,7 @@ class LpMarketMakerAgent:
     # Internal state.
     _mean_log: dict[int, float] = field(default_factory=dict, init=False)
     _prec: dict[int, float] = field(default_factory=dict, init=False)
+    _last_update_tick: dict[int, int] = field(default_factory=dict, init=False)
     _net_pos: dict[int, float] = field(default_factory=dict, init=False)
     #: market_id -> (bid_order_id, ask_order_id) currently resting on the venue.
     _resting: dict[int, tuple[str | None, str | None]] = field(
@@ -111,12 +117,16 @@ class LpMarketMakerAgent:
     def observes(self, market_id: int) -> bool:
         return market_id in self._mean_log
 
-    def _update_posterior(self, signal: Signal) -> None:
+    def _update_posterior(self, signal: Signal, now: int) -> None:
         m = signal.market_id
         if m not in self._mean_log:
             return
+        last = self._last_update_tick.get(m)
+        dt = 0.0 if last is None else float(now - last)
+        self._last_update_tick[m] = now
         mu, pr = gaussian_scalar_nif_update(
-            self._mean_log[m], self._prec[m], signal.value, self.signal_precision_assumed
+            self._mean_log[m], self._prec[m], signal.value,
+            self.signal_precision_assumed, q=self.q, dt=dt,
         )
         self._mean_log[m] = mu
         self._prec[m] = pr
@@ -124,7 +134,7 @@ class LpMarketMakerAgent:
     def decide(
         self, sim: Simulator, signal: Signal, market_env: MarketEnvironment
     ) -> TradeIntent | None:
-        self._update_posterior(signal)
+        self._update_posterior(signal, sim.now)
         return None
 
     def fire_noise(

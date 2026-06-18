@@ -27,16 +27,42 @@ def gaussian_scalar_nif_update(
     precision: float,
     obs: float,
     obs_precision: float,
+    *,
+    q: float = 0.0,
+    dt: float = 0.0,
 ) -> Tuple[float, float]:
     """One conjugate scalar Normal-Normal update (information form).
 
-    τ_new = τ_old + τ_obs
-    μ_new = (τ_old μ_old + τ_obs x) / τ_new
+    Default (``q == 0``) — STATIONARY target, precision only accumulates:
+
+        τ_new = τ_old + τ_obs
+        μ_new = (τ_old μ_old + τ_obs x) / τ_new
+
+    Time-aware (``q > 0``, process variance ``q`` per unit time, elapsed ``dt``)
+    — the prior is treated as a random walk, so its precision DECAYS for the
+    time since this belief was last updated before absorbing the new signal:
+
+        τ_decayed = 1 / (1/τ_old + q·dt)
+        τ_new     = τ_decayed + τ_obs
+        μ_new     = (τ_decayed μ_old + τ_obs x) / τ_new
+
+    so steady-state gain stays bounded away from 0 (the belief tracks a moving
+    target instead of freezing). With ``q == 0`` OR ``dt == 0`` the decay branch
+    is SKIPPED entirely and the exact stationary arithmetic above runs
+    byte-for-byte — the time-aware path is a gated-off no-op by default.
     """
     if precision <= 0:
         raise ValueError("precision must be positive")
     if obs_precision <= 0:
         raise ValueError("obs_precision must be positive")
+    if q < 0.0:
+        raise ValueError("process variance q must be non-negative")
+    if dt < 0.0:
+        raise ValueError("dt must be non-negative")
+    if q > 0.0 and dt > 0.0:
+        # Inflate prior variance by q·dt (random-walk prior), i.e. decay prior
+        # precision. Only on the q>0 path — never perturbs the q=0 baseline.
+        precision = 1.0 / (1.0 / precision + q * dt)
     new_prec = precision + obs_precision
     new_mean = (precision * mean + obs_precision * obs) / new_prec
     return new_mean, new_prec

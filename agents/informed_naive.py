@@ -36,11 +36,17 @@ class NaiveGaussianBeliefAgent:
     confidence_ceiling: float = 4.0
     safety_margin: float = 1.2
     min_trade_quantity: float = 1e-6
+    #: Belief process variance per unit time. 0 = stationary target (default,
+    #: byte-identical to the pre-Kalman filter). >0 decays prior precision by
+    #: q·Δt between updates so the belief tracks a moving target instead of
+    #: freezing. Δt is ticks since this agent last updated this market.
+    q: float = 0.0
 
     deployed: float = field(default=0.0, init=False)
     pending_cost: float = field(default=0.0, init=False)
     _mean_log: dict[int, float] = field(default_factory=dict, init=False)
     _prec: dict[int, float] = field(default_factory=dict, init=False)
+    _last_update_tick: dict[int, int] = field(default_factory=dict, init=False)
     arrival_rate_per_unit: float = field(default=0.0, init=False)
 
     def __post_init__(self) -> None:
@@ -77,13 +83,17 @@ class NaiveGaussianBeliefAgent:
     def posterior(self, market_id: int) -> tuple[float, float]:
         return self._mean_log[market_id], self._prec[market_id]
 
-    def update_posterior(self, signal: Signal) -> None:
+    def update_posterior(self, signal: Signal, now: int) -> None:
         m = signal.market_id
         if m not in self._mean_log:
             return
+        last = self._last_update_tick.get(m)
+        dt = 0.0 if last is None else float(now - last)
+        self._last_update_tick[m] = now
         obs_prec = self.signal_precision_assumed
         mu, pr = gaussian_scalar_nif_update(
-            self._mean_log[m], self._prec[m], signal.value, obs_prec
+            self._mean_log[m], self._prec[m], signal.value, obs_prec,
+            q=self.q, dt=dt,
         )
         self._mean_log[m] = mu
         self._prec[m] = pr
@@ -94,7 +104,7 @@ class NaiveGaussianBeliefAgent:
         signal: Signal,
         market_env: MarketEnvironment,
     ) -> TradeIntent | None:
-        self.update_posterior(signal)
+        self.update_posterior(signal, sim.now)
         return self._consider_trade(signal.market_id, market_env)
 
     def review(

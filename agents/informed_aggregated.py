@@ -40,11 +40,17 @@ class AggregatedEvidenceAgent:
     safety_margin: float = 1.2
     min_cross_weight: float = 0.05
     min_trade_quantity: float = 1e-6
+    #: Belief process variance per unit time. 0 = stationary target (default,
+    #: byte-identical to the pre-Kalman filter). >0 decays prior precision by
+    #: q·Δt between updates so the belief tracks a moving target instead of
+    #: freezing. Δt is per-primary-market ticks since that primary last updated.
+    q: float = 0.0
 
     deployed: float = field(default=0.0, init=False)
     pending_cost: float = field(default=0.0, init=False)
     _mean_log: dict[int, float] = field(default_factory=dict, init=False)
     _prec: dict[int, float] = field(default_factory=dict, init=False)
+    _last_update_tick: dict[int, int] = field(default_factory=dict, init=False)
     arrival_rate_per_unit: float = field(default=0.0, init=False)
 
     def __post_init__(self) -> None:
@@ -89,7 +95,7 @@ class AggregatedEvidenceAgent:
     def posterior(self, market_id: int) -> tuple[float, float]:
         return self._mean_log[market_id], self._prec[market_id]
 
-    def update_posterior(self, signal: Signal) -> None:
+    def update_posterior(self, signal: Signal, now: int) -> None:
         sig_m = signal.market_id
         for primary_m in self.market_ids:
             if primary_m == sig_m:
@@ -98,6 +104,9 @@ class AggregatedEvidenceAgent:
                 weight = self.cross_weights.get((primary_m, sig_m), 0.0)
             if abs(weight) < self.min_cross_weight:
                 continue
+            last = self._last_update_tick.get(primary_m)
+            dt = 0.0 if last is None else float(now - last)
+            self._last_update_tick[primary_m] = now
             tau_eff = self.signal_precision_assumed * weight * weight
             val_eff = weight * signal.value
             mu, pr = gaussian_scalar_nif_update(
@@ -105,6 +114,8 @@ class AggregatedEvidenceAgent:
                 self._prec[primary_m],
                 val_eff,
                 tau_eff,
+                q=self.q,
+                dt=dt,
             )
             self._mean_log[primary_m] = mu
             self._prec[primary_m] = pr
@@ -115,7 +126,7 @@ class AggregatedEvidenceAgent:
         signal: Signal,
         market_env: MarketEnvironment,
     ) -> TradeIntent | None:
-        self.update_posterior(signal)
+        self.update_posterior(signal, sim.now)
         if signal.market_id in self._mean_log:
             return self._consider_trade(signal.market_id, market_env)
         return None

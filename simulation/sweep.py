@@ -265,6 +265,7 @@ def build_agents_diverse(
     n_markets: int,
     *,
     delays: RoleDelayConfig | None = None,
+    belief_process_var: float = 0.0,
 ) -> list[PopulationAgent]:
     delays = delays or RoleDelayConfig()
     init_log = _opening_log_means(market_env, info_env, n_markets)
@@ -293,6 +294,7 @@ def build_agents_diverse(
         disagreement_threshold_log=thresh,
         trade_size=ts,
         safety_margin=safety,
+        q=belief_process_var,
     )
     tail = TailAwareGaussianBeliefAgent(
         agent_id=2,
@@ -305,6 +307,7 @@ def build_agents_diverse(
         disagreement_threshold_log=thresh,
         trade_size=ts,
         safety_margin=safety,
+        q=belief_process_var,
     )
     agg = AggregatedEvidenceAgent(
         agent_id=3,
@@ -320,6 +323,7 @@ def build_agents_diverse(
         disagreement_threshold_log=thresh,
         trade_size=ts,
         safety_margin=safety,
+        q=belief_process_var,
     )
     joint = make_joint_factor_agent(
         agent_id=4,
@@ -356,6 +360,7 @@ def build_agents_naive_dominated(
     n_naive: int = 5,
     *,
     delays: RoleDelayConfig | None = None,
+    belief_process_var: float = 0.0,
 ) -> list[PopulationAgent]:
     delays = delays or RoleDelayConfig()
     init_log = _opening_log_means(market_env, info_env, n_markets)
@@ -378,6 +383,7 @@ def build_agents_naive_dominated(
                 disagreement_threshold_log=thresh,
                 trade_size=ts,
                 safety_margin=safety,
+                q=belief_process_var,
             )
         )
     agents.append(
@@ -408,6 +414,7 @@ def build_agents_lp_vs_informed(
     lp_half_spread_pct: float = 0.0005,
     lp_quote_size: float | None = None,
     lp_budget: float = 20_000.0,
+    belief_process_var: float = 0.0,
 ) -> list[PopulationAgent]:
     """The known diverse informed population PLUS one two-sided LP.
 
@@ -427,6 +434,7 @@ def build_agents_lp_vs_informed(
         agent_rng,
         n_markets,
         delays=delays,
+        belief_process_var=belief_process_var,
     )
     init_log = _opening_log_means(market_env, info_env, n_markets)
     ts = _trade_size_for_budget(budget)
@@ -440,6 +448,7 @@ def build_agents_lp_vs_informed(
         review_interval=500,
         half_spread_pct=lp_half_spread_pct,
         quote_size=quote,
+        q=belief_process_var,
     )
     return [*base, lp]
 
@@ -467,6 +476,7 @@ def run_single_simulation(
     lp_half_spread_pct: float = 0.0005,
     lp_quote_size: float | None = None,
     lp_budget: float = 20_000.0,
+    belief_process_var: float = 0.0,
 ) -> dict[str, Any]:
     if mechanism not in ("amm", "clob", "hybrid"):
         raise ValueError(f"unknown mechanism {mechanism!r}")
@@ -525,6 +535,7 @@ def run_single_simulation(
             agent_rng,
             n_markets,
             delays=delays,
+            belief_process_var=belief_process_var,
         )
     elif mix == "lp_vs_informed":
         agents = build_agents_lp_vs_informed(
@@ -540,11 +551,13 @@ def run_single_simulation(
             lp_half_spread_pct=lp_half_spread_pct,
             lp_quote_size=lp_quote_size,
             lp_budget=lp_budget,
+            belief_process_var=belief_process_var,
         )
     else:
         agents = build_agents_naive_dominated(
             budget, market_env, info_env, n_markets, naive_dominated_count,
             delays=delays,
+            belief_process_var=belief_process_var,
         )
 
     population = AgentPopulation(agents)
