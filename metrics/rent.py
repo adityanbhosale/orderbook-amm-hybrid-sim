@@ -2,8 +2,44 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Callable, Optional
 
 from environment.trade_records import TradeRecord
+
+#: Fair-value accessor: ``(market_id, timestamp) -> fair price``. Per-fill
+#: markout evaluates this at each fill's ``rec.timestamp``. The current world
+#: model has a STATIC truth, so the production accessor (``frozen_fair_value``)
+#: returns the same per-market scalar at every timestamp and fill-time marking
+#: is byte-identical to terminal-fair marking. The timestamp argument is the
+#: plumbing that lets a later phase (moving truth, or a markout horizon) mark a
+#: fill against fair-at-fill-time without touching these call sites again.
+FairValueAt = Callable[[int, int], float]
+
+
+def frozen_fair_value(fair_prices_by_market: dict[int, float]) -> FairValueAt:
+    """Accessor for a STATIC truth: returns the same per-market scalar for any ts.
+
+    Marking fills through this equals terminal-fair marking when truth is frozen
+    (the values only diverge once truth actually varies). This is the default
+    used everywhere today.
+    """
+
+    def _fair(market_id: int, timestamp: int) -> float:
+        return fair_prices_by_market[market_id]
+
+    return _fair
+
+
+def _resolve_fair_at(
+    fair_at: Optional[FairValueAt],
+    fair_prices_by_market: Optional[dict[int, float]],
+) -> FairValueAt:
+    """Pick the explicit time-indexed accessor, else wrap the frozen scalar map."""
+    if fair_at is not None:
+        return fair_at
+    if fair_prices_by_market is not None:
+        return frozen_fair_value(fair_prices_by_market)
+    raise ValueError("provide either fair_at or fair_prices_by_market")
 
 
 @dataclass
@@ -34,23 +70,26 @@ def _trade_mtm_pnl(rec: TradeRecord, fair_end: float) -> float:
 def pnl_by_role(
     records: list[TradeRecord],
     *,
-    fair_prices_by_market: dict[int, float],
     role_by_agent_id: dict[int, str],
+    fair_prices_by_market: Optional[dict[int, float]] = None,
+    fair_at: Optional[FairValueAt] = None,
 ) -> dict[str, float]:
-    """Bucket per-agent terminal mark-to-market PnL by role.
+    """Bucket per-agent mark-to-market PnL by role, marked at fair-at-fill-time.
 
-    Uses the same per-fill ``_trade_mtm_pnl`` as :func:`rent_and_pnl` (terminal
-    fair, static log-truth), so role buckets are consistent with the existing
-    informed-vs-noise outputs. ``role_by_agent_id`` maps each agent_id to a
-    role label; agents absent from the map are ignored. Returns a dict keyed
-    by every role label present in ``role_by_agent_id`` (zero if no fills).
+    Each fill is marked against ``fair_at(market_id, rec.timestamp)``. Pass
+    ``fair_at`` for the time-indexed accessor, or ``fair_prices_by_market`` for
+    the frozen scalar map (auto-wrapped); with a static truth the two coincide.
+    ``role_by_agent_id`` maps each agent_id to a role label; agents absent from
+    the map are ignored. Returns a dict keyed by every role label present in
+    ``role_by_agent_id`` (zero if no fills).
     """
+    fair = _resolve_fair_at(fair_at, fair_prices_by_market)
     out: dict[str, float] = {role: 0.0 for role in set(role_by_agent_id.values())}
     for r in records:
         role = role_by_agent_id.get(r.agent_id)
         if role is None:
             continue
-        out[role] += _trade_mtm_pnl(r, fair_prices_by_market[r.market_id])
+        out[role] += _trade_mtm_pnl(r, fair(r.market_id, r.timestamp))
     return out
 
 
@@ -75,11 +114,19 @@ def rent_and_pnl(
     noise_agent_ids: set[int],
     pool_reserves_start: dict[int, tuple[float, float]],
     pool_reserves_end: dict[int, tuple[float, float]],
+    fair_at: Optional[FairValueAt] = None,
 ) -> RentPnlResult:
     """
-    LP rent summed over parallel pools; PnL is horizon mark-to-market at
-    terminal fair (log-truth is static in the current world model).
+    LP rent summed over parallel pools; per-fill PnL is mark-to-market at
+    fair-at-fill-time (``fair_at(market_id, rec.timestamp)``).
+
+    ``fair_prices_by_market`` is the terminal per-market fair, used for the AMM
+    LP-rent horizon MTM (a terminal-horizon measure by construction). Per-fill
+    PnL uses ``fair_at`` when supplied, else the frozen scalar map; with a static
+    truth the two coincide, so fill-time marking is byte-identical to terminal.
     """
+    fair_fill = _resolve_fair_at(fair_at, fair_prices_by_market)
+
     lp_rent = 0.0
     for m, (x0, y0) in pool_reserves_start.items():
         x1, y1 = pool_reserves_end[m]
@@ -89,8 +136,7 @@ def rent_and_pnl(
     inf_pnl = 0.0
     noise_pnl = 0.0
     for r in records:
-        fair = fair_prices_by_market[r.market_id]
-        pnl = _trade_mtm_pnl(r, fair)
+        pnl = _trade_mtm_pnl(r, fair_fill(r.market_id, r.timestamp))
         if r.agent_id in informed_agent_ids:
             inf_pnl += pnl
         elif r.agent_id in noise_agent_ids:
@@ -112,7 +158,9 @@ def rent_and_pnl(
 
 
 __all__ = [
+    "FairValueAt",
     "RentPnlResult",
+    "frozen_fair_value",
     "lp_rent_cp_amm_per_pool",
     "pnl_by_role",
     "rent_and_pnl",

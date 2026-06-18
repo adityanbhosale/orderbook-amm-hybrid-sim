@@ -38,7 +38,7 @@ from environment.information import ClusterSpec
 from environment.information_helpers import base_log_levels_from_truth
 from metrics.capital import fraction_exhausted_before_convergence
 from metrics.convergence import build_mid_trajectory_from_trades, convergence_metrics
-from metrics.rent import pnl_by_role, rent_and_pnl
+from metrics.rent import frozen_fair_value, pnl_by_role, rent_and_pnl
 from venues.clob import CLOB
 from venues.constant_product import ConstantProductAMM
 from venues.hybrid import HybridLpConfig, HybridVenue
@@ -627,6 +627,12 @@ def run_single_simulation(
     fair_map = {m: float(fair_arr[m]) for m in range(n_markets)}
     budgets_map = {a.agent_id: a.budget for a in agents}
 
+    # Per-fill markout against fair-at-fill-time. Truth is the static scalar this
+    # phase, so the accessor returns the same value at every timestamp and this
+    # is byte-identical to terminal-fair marking — the time-indexing is plumbing
+    # for a later phase, not a behavior change now.
+    fair_at = frozen_fair_value(fair_map)
+
     rpnl = rent_and_pnl(
         records,
         fair_prices_by_market=fair_map,
@@ -634,13 +640,14 @@ def run_single_simulation(
         noise_agent_ids=noise_ids,
         pool_reserves_start=pool_start,
         pool_reserves_end=pool_end,
+        fair_at=fair_at,
     )
 
     role_map = _role_by_agent_id(agents)
     role_pnl = pnl_by_role(
         records,
-        fair_prices_by_market=fair_map,
         role_by_agent_id=role_map,
+        fair_at=fair_at,
     )
 
     # LP observability (0 / 0.0 for mixes without an LP). n_lp_fills is the
