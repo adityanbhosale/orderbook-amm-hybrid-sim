@@ -29,10 +29,34 @@ rests on the faithful-environment chain above. Defensible claim is the **paired
 ~95% reduction in this regime, protection from the mechanism switch**, NOT
 "batching eliminates extraction" and NOT generality beyond the tested cell.
 
+**Frontier sweeps DONE (build_log Entry 5) — corrected headline:**
+- **Delay-gap axis is INERT** (flat ~+87 over gaps 4–199): LP `observation_delay`
+  isn't the staleness lever; the **requote interval** is (signals too sparse for
+  the delay to bite).
+- **Walk-vol:** holds, reduction scales with drift (+33 → +87 → +223 over
+  `walk_var` 1e-7→1e-5; FBA ≈3–7% of CLOB's bleed throughout).
+- **Regime:** holds in lower-info; **high-capital REDISTRIBUTES** (LP protected
+  but informed Σ *grows* +1060→+1660 — extraction moves to noise/bootstrap, not
+  prevented).
+- **Requote-cadence frontier (the operative lever):** reduction **monotone
+  DECREASING as the LP requotes slower** (+105 at req=50 → +29 at req=2000) —
+  the **OPPOSITE** of the staleness prediction, which is **refuted**. Bleed is
+  **exposure/activity-driven** (CLOB bleed tracks fill count; per-fill markout
+  ~flat at −4 over req 50–500), not per-fill staleness.
+  - **Clean regime req 50–500:** genuine per-fill protection (~6–8× lower under
+    FBA, LP actively trading), transfer = **prevention** (informed Σ capped ~130).
+  - **Boundary req ≥ 1000 = solvency artifact:** FBA `n_fills` 9→7, robustness
+    drops (frac 0.80→0.68); the small slow-requote bleed is the LP *not trading*,
+    not protection.
+- **Corrected defensible claim:** "batching protects an **actively-quoting** LP
+  per-fill (~6–8×) in the active regime (req 50–500), extraction prevented; the
+  benefit is **exposure-driven** and vanishes into reduced-activity at slow
+  requote." NOT "batching protects slow/stale LPs."
+
 **Open threads (not done):** walk-aware convergence metric + AMM `lp_rent` still
-t=0-referenced (Phase C); regime/delay-gap sweep of the τ-result; endogenous LP
-spread (§5.4); corrected incumbent baselines on the new recording (§5.6). The §5
-sections below are the original plan; the §9 "first move" is historical.
+t=0-referenced (Phase C); endogenous LP spread (§5.4); corrected incumbent
+baselines on the new recording (§5.6); requote-cadence sweep across regimes
+(only mid/low done). The §5 sections below are the original plan; §9 is historical.
 
 ---
 

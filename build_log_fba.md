@@ -965,3 +965,94 @@ switch (flat in τ over 1–200), and the informed gain shrinks correspondingly
 and **no** implied generality beyond the tested cell.
 
 Measurement only; nothing committed by the run.
+
+---
+
+## Entry 5 — frontier sweeps: regime/walk-vol/delay-gap, then the requote-cadence headline
+
+Date: 2026-06-19. Characterizes WHERE the Entry-4 CLOB→FBA reduction holds across
+the parameter space, to anchor a writeup. All paired-by-seed (CLOB and FBA(τ=10)
+on the same walk path per seed — the walk RNG `SeedSequence(seed).spawn(5)[4]` is
+mechanism-independent), N=25, `red = FBA pnl_lp − CLOB pnl_lp` (+ve ⇒ FBA bleeds
+less). Rests on the same apparatus chain as Entry 4 (`1401c97` LP channel →
+`9b2b8d5` markout time-index → `b113966`/`ad8a327` Kalman belief → `6c17346`
+moving-truth walk → `57dab02` markout-on-path → `cbcccbc` FBA mechanism).
+
+### 5a. Cross through the center (delay-gap / walk-vol / regime)
+
+Center: FAST informed delay 1, LP `observation_delay` 50, `walk_var=1e-6`, mid/low,
+`q=walk_var`, FBA τ=10.
+
+- **Delay gap (FAST=1, sweep LP `observation_delay` ∈ {5,10,25,50,100,200} →
+  gaps 4–199): FLAT (~+86 to +90, frac 0.96 throughout) — and the axis is INERT
+  by construction.** LP=5 and LP=10 are byte-identical. The LP's `observation_
+  delay` is NOT the operative staleness lever: signals are sparse (~6/market over
+  8000 ticks), so "signals up to t−5" vs "t−200" is usually the same set at each
+  requote. LP staleness is dominated by its **requote interval** (`review_interval
+  =500`, held fixed), not its observation delay. → motivated 5b.
+- **Walk vol (gap 49, sweep `walk_var` ∈ {1e-7,1e-6,1e-5}): holds, reduction
+  scales with drift** — red 32.9 → 87.2 → 223.4 (mean/SEM ~6, frac 0.92–0.96);
+  FBA holds the LP to ~3–7% of CLOB's bleed at every drift speed.
+- **Regime (gap 49, walk_var 1e-6): holds in lower-info; high-capital
+  REDISTRIBUTES.** mid/low +87.2; mid/high (lower-info, higher noise) +65.2
+  (smaller bleed, smaller but robust); high/low (higher capital) +520.4, frac
+  1.00 — BUT informed Σ **grows** under FBA there (CLOB +1060 → FBA +1660), the
+  opposite of the center cell (+182 → +130). So in high-capital the LP is
+  protected but the informed extract MORE (from noise/bootstrap) — **redistribution,
+  not prevention.** Logged as a boundary on the "prevention" reading.
+
+### 5b. The requote-cadence frontier (the corrected headline lever)
+
+Sweeps the LP `review_interval` (the operative lever 5a identified), LP-only
+(informed requote at 5000; bootstrap agent −1 has no review). Enabled by exposing
+`lp_review_interval` through `run_single_simulation`/`build_agents_lp_vs_informed`
+(default 500, byte-identical — re-verified: frozen `pnl_lp=+0.873613486760819`,
+walk-center seed-0 `−169.96327290271356`). Center otherwise; gap 49.
+
+| review_int | red mean | SEM  | mean/SEM | frac | CLOB bleed | FBA bleed | n_fills C/F | per-fill C/F   | informed Σ C/F |
+|------------|----------|------|----------|------|------------|-----------|-------------|----------------|----------------|
+| 50 (fast)  | +105.07  | 14.6 | 7.2      | 0.96 | −111.50    | −6.43     | 27/10       | −4.15 / −0.65  | 165 / 129      |
+| 100        | +99.38   | 16.0 | 6.2      | 0.92 | −105.56    | −6.18     | 26/10       | −3.99 / −0.64  | 162 / 129      |
+| 250        | +92.50   | 16.2 | 5.7      | 0.96 | −98.98     | −6.48     | 24/10       | −4.08 / −0.68  | 158 / 129      |
+| 500 (ctr)  | +87.19   | 13.4 | 6.5      | 0.96 | −91.86     | −4.68     | 22/10       | −4.19 / −0.49  | 182 / 130      |
+| 1000       | +53.66   | 13.4 | 4.0      | 0.80 | −55.77     | −2.11     | 17/9        | −3.15 / −0.26  | 174 / 130      |
+| 2000 (slow)| +29.35   | 9.8  | 3.0      | 0.68 | −29.40     | −0.05     | 13/7        | −2.41 / −0.01  | 167 / 130      |
+
+**Shape + REFUTATION (the point):** the reduction is **monotone DECREASING as the
+LP requotes more slowly** — +105 (req=50, fast) → +29 (req=2000, slow). This is
+the **OPPOSITE** of the staleness prediction ("slower requote = staler quotes =
+more picked off = more protection"). The thesis intuition is **refuted**.
+
+**Real mechanism — exposure/activity, not per-fill staleness.** The CLOB bleed
+tracks the LP's **fill count** (27 → 13 as requote slows): a fast-requoting LP is
+constantly in the market with tight fresh quotes → hit often (many small adverse
+fills); a slow-requoting LP, once its quotes are consumed, is **absent** until its
+next requote → hit rarely. **Per-fill markout is roughly flat (~−4) from req
+50–500**, so total bleed falls at slow requote mainly because the LP **trades
+less**, not because each fill is more adverse. (The stale tail of a quote's life
+rarely gets harvested — the quote is consumed while still relatively fresh.)
+
+**Clean regime (req 50–500):** genuine per-fill protection — LP actively trades
+(22–27 fills CLOB / ~10 FBA), per-fill markout **~6–8× lower under FBA**,
+reduction +87…+105, robust (frac 0.96, mean/SEM 6–7), and **transfer = PREVENTION**
+(informed Σ shrinks under FBA, capped ~130 regardless of requote).
+
+**Boundary / solvency caveat (req ≥ 1000), NOT a result:** FBA n_fills falls to
+9 then 7; robustness drops (mean/SEM 4.0 → 3.0; frac 0.80 → 0.68 — at req=2000 a
+third of seeds show no reduction); FBA bleed ~0 (−0.05) because the LP barely
+trades. The slow-requote "small bleed" is **the LP not trading, not protection.**
+
+### Defensible claim (do not overstate)
+
+"Batching protects an **actively-quoting** LP per-fill (~6–8×) in the active
+requote regime (`review_interval` 50–500), with extraction **prevented** (informed
+gain shrinks). The benefit is **exposure-driven** — it scales with how often the
+LP is in the market — and **vanishes into reduced-activity** at slow requote
+(≥1000), where the LP simply trades too rarely to be picked off." The operative
+speed lever is the **requote cadence, NOT the observation-delay gap** (which is
+inert here). Explicitly **not** "batching protects slow/stale LPs" (the refuted
+prediction), and the high-capital cell shows it can **redistribute rather than
+prevent**. One mix/horizon family; no claim of generality beyond the tested cells.
+
+Measurement only; the sole code change is the `lp_review_interval` knob (default
+500, byte-identical).

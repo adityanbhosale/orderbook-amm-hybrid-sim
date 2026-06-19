@@ -464,6 +464,7 @@ def build_agents_lp_vs_informed(
     lp_quote_size: float | None = None,
     lp_budget: float = 20_000.0,
     belief_process_var: float = 0.0,
+    lp_review_interval: int = 500,
 ) -> list[PopulationAgent]:
     """The known diverse informed population PLUS one two-sided LP.
 
@@ -494,7 +495,7 @@ def build_agents_lp_vs_informed(
         market_ids=tuple(range(n_markets)),
         initial_log_fair_mean=init_log.copy(),
         observation_delay=lp_observation_delay,
-        review_interval=500,
+        review_interval=lp_review_interval,
         half_spread_pct=lp_half_spread_pct,
         quote_size=quote,
         q=belief_process_var,
@@ -525,6 +526,7 @@ def run_single_simulation(
     lp_half_spread_pct: float = 0.0005,
     lp_quote_size: float | None = None,
     lp_budget: float = 20_000.0,
+    lp_review_interval: int = 500,
     walk_var: float = 0.0,
     belief_process_var: float | None = None,
     tau_ticks: int = 1,
@@ -618,6 +620,7 @@ def run_single_simulation(
             lp_half_spread_pct=lp_half_spread_pct,
             lp_quote_size=lp_quote_size,
             lp_budget=lp_budget,
+            lp_review_interval=lp_review_interval,
             belief_process_var=q_eff,
         )
     else:
