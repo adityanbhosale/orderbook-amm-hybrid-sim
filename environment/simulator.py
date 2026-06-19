@@ -101,7 +101,7 @@ def schedule_poisson(
     rate_per_unit_time: float,
     event_type: str,
     until_ts: int,
-    payload_fn: Optional[Callable[["Simulator"], Any]] = None,
+    payload_fn: Optional[Callable[["Simulator", int], Any]] = None,
     priority: int = EventPriority.SIGNAL,
 ) -> int:
     if rate_per_unit_time <= 0:
@@ -127,7 +127,10 @@ def schedule_poisson(
             t_tick = sim.now
         if t_tick > until_ts:
             break
-        payload = payload_fn(sim) if payload_fn is not None else None
+        # payload_fn receives the scheduled tick so emission-time values (e.g. a
+        # moving truth read at t_tick) are snapshotted into the event at schedule
+        # time. Signals are the only caller; the value is still fixed at emission.
+        payload = payload_fn(sim, t_tick) if payload_fn is not None else None
         sim.schedule_at(t_tick, event_type, payload, priority)
         n_scheduled += 1
 

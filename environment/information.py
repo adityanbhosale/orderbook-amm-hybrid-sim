@@ -55,6 +55,14 @@ class InformationConfig:
     tail_rate_per_market: float = 0.05
     tail_mode: str = "separate"
 
+    #: Per-unit-time variance of the common-factor Gaussian random walk
+    #: ``f_t = f_{t-1} + N(0, walk_var)``. 0 (default) = STATIC truth (the factor
+    #: never moves; ``log_fair_value`` is constant in t), reproducing the frozen
+    #: world byte-for-byte. >0 = moving truth: per-market log-fair-value follows
+    #: ``alpha_m + beta_m·f_t + idio_m``, co-moving across markets via the
+    #: shared factor and the loadings.
+    walk_var: float = 0.0
+
     #: Length ``n_markets`` — price level :math:`\\text{mid}_m` at simulation start (t=0).
     initial_mid_prices: Optional[np.ndarray] = None
 
@@ -87,6 +95,8 @@ class InformationConfig:
         for name in ("routine_rate_per_market", "tail_rate_per_market"):
             if getattr(self, name) < 0:
                 raise ValueError(f"{name} must be non-negative")
+        if self.walk_var < 0:
+            raise ValueError("walk_var must be non-negative")
         if self.initial_mid_prices is not None:
             arr = np.asarray(self.initial_mid_prices, dtype=float)
             if arr.shape != (self.n_markets,):
@@ -187,6 +197,10 @@ class InformationEnvironment:
         self.rng = rng
         self.world = LatentFactorModel(config, rng)
         self._scheduled = False
+        #: (n_markets, until_ts+1) log-fair-value path, materialized at t=0 when
+        #: walk_var>0; None for the static world (signals then read the constant
+        #: ``log_fair_value`` exactly, byte-identical).
+        self._log_fv_path: Optional[np.ndarray] = None
 
     @property
     def truths(self) -> list[MarketTruth]:
@@ -196,13 +210,61 @@ class InformationEnvironment:
     def n_markets(self) -> int:
         return self.world.n_markets
 
-    def schedule_signals(self, sim: Simulator, until_ts: int) -> dict[str, int]:
+    def log_fair_value_at(self, market_id: int, t: int) -> float:
+        """True log-fair-value of ``market_id`` at tick ``t``.
+
+        Static world (walk_var=0): the constant ``log_fair_value``. Moving world:
+        the materialized walk path ``alpha_m + beta_m·f_t + idio_m``.
+        """
+        if self._log_fv_path is None:
+            return self.world.truths[market_id].log_fair_value
+        return float(self._log_fv_path[market_id, t])
+
+    def _materialize_factor_walk_path(
+        self, until_ts: int, walk_rng: Optional[np.random.Generator]
+    ) -> Optional[np.ndarray]:
+        """Per-market log-fair-value path from a common-factor Gaussian walk.
+
+        ``f_t = f_{t-1} + N(0, walk_var)`` starting from the t=0 factor draw, then
+        ``log_fv_m(t) = alpha_m + beta_m·f_t + idio_m``. Returns None when
+        walk_var=0 so the caller takes the exact static path (no matmul recompute
+        that could differ in the last ULP). Deterministic from ``walk_rng``.
+        """
+        cfg = self.config
+        if cfg.walk_var <= 0.0:
+            return None
+        if walk_rng is None:
+            raise ValueError("walk_rng is required when walk_var > 0")
+        k = cfg.k
+        f0 = self.world.f
+        step_std = float(np.sqrt(cfg.walk_var))
+        steps = walk_rng.normal(0.0, step_std, size=(until_ts, k))
+        f_path = np.empty((until_ts + 1, k), dtype=float)
+        f_path[0] = f0
+        f_path[1:] = f0 + np.cumsum(steps, axis=0)  # f_1 .. f_until_ts
+        loadings = self.world.loadings_matrix  # (M, k)
+        alpha = np.array([t.alpha for t in self.world.truths], dtype=float)
+        idio = np.array([t.idiosyncratic for t in self.world.truths], dtype=float)
+        # (M, T+1): alpha_m + sum_j loadings[m,j]·f_path[t,j] + idio_m. einsum
+        # (not matmul) avoids a documented spurious BLAS FP-exception warning on
+        # the tiny (M,k)x(k,T) product; values are identical, all inputs O(1).
+        factor_contrib = np.einsum("mj,tj->mt", loadings, f_path)
+        return alpha[:, None] + factor_contrib + idio[:, None]
+
+    def schedule_signals(
+        self,
+        sim: Simulator,
+        until_ts: int,
+        walk_rng: Optional[np.random.Generator] = None,
+    ) -> dict[str, int]:
         if self._scheduled:
             raise RuntimeError(
                 "schedule_signals already called; create a fresh env for a new run"
             )
 
         cfg = self.config
+        self._log_fv_path = self._materialize_factor_walk_path(until_ts, walk_rng)
+        path = self._log_fv_path
         routine_count = [0]
         tail_count = [0]
 
@@ -212,25 +274,29 @@ class InformationEnvironment:
 
                 def make_routine(
                     s,
+                    t_tick,
                     mid=m_id,
                     lg=log_fv,
                     rc=routine_count,
+                    pth=path,
                 ):
                     rc[0] += 1
+                    base = lg if pth is None else float(pth[mid, t_tick])
                     return Signal(
                         market_id=mid,
                         value=float(
-                            lg + s.rng.normal(0.0, cfg.signal_noise_std)
+                            base + s.rng.normal(0.0, cfg.signal_noise_std)
                         ),
                         is_tail=False,
                         noise_std=cfg.signal_noise_std,
                     )
 
-                def make_tail(s, mid=m_id, lg=log_fv, tc=tail_count):
+                def make_tail(s, t_tick, mid=m_id, lg=log_fv, tc=tail_count, pth=path):
                     tc[0] += 1
+                    base = lg if pth is None else float(pth[mid, t_tick])
                     return Signal(
                         market_id=mid,
-                        value=float(lg + s.rng.normal(0.0, cfg.tail_noise_std)),
+                        value=float(base + s.rng.normal(0.0, cfg.tail_noise_std)),
                         is_tail=True,
                         noise_std=cfg.tail_noise_std,
                     )
@@ -264,11 +330,13 @@ class InformationEnvironment:
 
                 def make_signal(
                     s,
+                    t_tick,
                     mid=m_id,
                     lg=log_fv,
                     pt=p_tail,
                     rc=routine_count,
                     tc=tail_count,
+                    pth=path,
                 ):
                     is_tail = bool(s.rng.random() < pt)
                     sigma = cfg.tail_noise_std if is_tail else cfg.signal_noise_std
@@ -276,9 +344,10 @@ class InformationEnvironment:
                         tc[0] += 1
                     else:
                         rc[0] += 1
+                    base = lg if pth is None else float(pth[mid, t_tick])
                     return Signal(
                         market_id=mid,
-                        value=float(lg + s.rng.normal(0.0, sigma)),
+                        value=float(base + s.rng.normal(0.0, sigma)),
                         is_tail=is_tail,
                         noise_std=sigma,
                     )

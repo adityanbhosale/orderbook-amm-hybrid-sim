@@ -138,6 +138,7 @@ def _default_information_config(
     *,
     signal_noise_std: float,
     tail_noise_std: float,
+    walk_var: float = 0.0,
     n_markets: int = 3,
     k: int = 3,
 ) -> InformationConfig:
@@ -159,6 +160,7 @@ def _default_information_config(
         routine_rate_per_market=0.75,
         tail_rate_per_market=0.035,
         tail_mode="marked",
+        walk_var=walk_var,
         initial_mid_prices=mids,
     )
 
@@ -477,7 +479,8 @@ def run_single_simulation(
     lp_half_spread_pct: float = 0.0005,
     lp_quote_size: float | None = None,
     lp_budget: float = 20_000.0,
-    belief_process_var: float = 0.0,
+    walk_var: float = 0.0,
+    belief_process_var: float | None = None,
 ) -> dict[str, Any]:
     if mechanism not in ("amm", "clob", "hybrid"):
         raise ValueError(f"unknown mechanism {mechanism!r}")
@@ -485,16 +488,28 @@ def run_single_simulation(
     budget = CAPITAL_BANDS[capital_band]
     sig = SIGNAL_REGIMES[signal_regime]
 
+    # Correctly-specified agents: unless explicitly overridden, the belief
+    # process variance equals the truth walk variance, so agents are optimal
+    # trackers and any residual staleness is latency/information, not filter
+    # mis-specification. walk_var=0 + default => q=0 (frozen world, byte-identical).
+    q_eff = (
+        belief_process_var
+        if belief_process_var is not None
+        else (walk_var if walk_var > 0.0 else 0.0)
+    )
+
     seq = np.random.SeedSequence(seed)
-    child_sim, child_world, child_agent, child_anchor = seq.spawn(4)
+    child_sim, child_world, child_agent, child_anchor, child_walk = seq.spawn(5)
     sim_rng = np.random.default_rng(child_sim)
     world_rng = np.random.default_rng(child_world)
     agent_rng = np.random.default_rng(child_agent)
     anchor_rng = np.random.default_rng(child_anchor)
+    walk_rng = np.random.default_rng(child_walk)
 
     cfg = _default_information_config(
         signal_noise_std=sig["signal_noise_std"],
         tail_noise_std=sig["tail_noise_std"],
+        walk_var=walk_var,
     )
     info_env = InformationEnvironment(cfg, world_rng)
     sim = Simulator(rng=sim_rng, time_resolution=time_resolution)
@@ -516,7 +531,7 @@ def run_single_simulation(
     margin = MarginSpec(long_margin_fraction=1.0, short_margin_fraction=1.0)
     market_env = MarketEnvironment(venues_any, margin=margin)
     market_env.register(sim)
-    info_env.schedule_signals(sim, until_ts)
+    info_env.schedule_signals(sim, until_ts, walk_rng=walk_rng)
 
     loadings_matrix = info_env.world.loadings_matrix
     cw = cross_weights_from_loadings(
@@ -536,7 +551,7 @@ def run_single_simulation(
             agent_rng,
             n_markets,
             delays=delays,
-            belief_process_var=belief_process_var,
+            belief_process_var=q_eff,
         )
     elif mix == "lp_vs_informed":
         agents = build_agents_lp_vs_informed(
@@ -552,13 +567,13 @@ def run_single_simulation(
             lp_half_spread_pct=lp_half_spread_pct,
             lp_quote_size=lp_quote_size,
             lp_budget=lp_budget,
-            belief_process_var=belief_process_var,
+            belief_process_var=q_eff,
         )
     else:
         agents = build_agents_naive_dominated(
             budget, market_env, info_env, n_markets, naive_dominated_count,
             delays=delays,
-            belief_process_var=belief_process_var,
+            belief_process_var=q_eff,
         )
 
     population = AgentPopulation(agents)
@@ -607,6 +622,12 @@ def run_single_simulation(
             for m in range(n_markets)
         }
 
+    # NOTE (walk-awareness): fair_arr / log_truth are the t=0 truth. Under
+    # walk_var>0 the true log-fair-value MOVES, so the convergence metric below
+    # measures distance to the t=0 truth, NOT the walk-aware (path) target — its
+    # numbers are not meaningful under a walk. A walk-aware convergence
+    # redefinition is Phase C; this phase deliberately leaves it as-is (the
+    # `walk_var` field in the summary flags when the run is a moving-truth run).
     log_truth = np.log(fair_arr)
 
     records = list(market_env.trade_log)
@@ -713,6 +734,8 @@ def run_single_simulation(
         "n_informed_exhausted": cap_sat.n_exhausted,
         "delay_fast": delays.fast,
         "delay_slow": delays.slow,
+        "walk_var": walk_var,
+        "belief_process_var": q_eff,
         "pnl_fast_informed": role_pnl.get(ROLE_FAST, 0.0),
         "pnl_slow_informed": role_pnl.get(ROLE_SLOW, 0.0),
         "pnl_noise_role": role_pnl.get(ROLE_NOISE, 0.0),
