@@ -38,7 +38,7 @@ from environment.information import ClusterSpec
 from environment.information_helpers import base_log_levels_from_truth
 from metrics.capital import fraction_exhausted_before_convergence
 from metrics.convergence import build_mid_trajectory_from_trades, convergence_metrics
-from metrics.rent import frozen_fair_value, pnl_by_role, rent_and_pnl
+from metrics.rent import FairValueAt, frozen_fair_value, pnl_by_role, rent_and_pnl
 from venues.clob import CLOB
 from venues.constant_product import ConstantProductAMM
 from venues.hybrid import HybridLpConfig, HybridVenue
@@ -117,6 +117,22 @@ def _role_by_agent_id(agents: Sequence[PopulationAgent]) -> dict[int, str]:
         elif isinstance(a, LpMarketMakerAgent):
             roles[a.agent_id] = ROLE_LP
     return roles
+
+
+def _walk_path_fair_value(
+    info_env: InformationEnvironment, until_ts: int
+) -> FairValueAt:
+    """FairValueAt backed by the moving-truth walk PATH (walk_var>0 runs).
+
+    Returns ``exp(log_fair_value_at(market, t))`` — the true fair PRICE at the
+    fill's own tick — so per-fill markout reflects fair-at-fill-time, not the
+    t=0/terminal truth. ``t`` is clamped to the materialized horizon.
+    """
+    def _fair(market_id: int, t: int) -> float:
+        tt = 0 if t < 0 else (until_ts if t > until_ts else t)
+        return math.exp(info_env.log_fair_value_at(market_id, tt))
+
+    return _fair
 
 
 def _anchor_displacements(
@@ -662,11 +678,15 @@ def run_single_simulation(
     fair_map = {m: float(fair_arr[m]) for m in range(n_markets)}
     budgets_map = {a.agent_id: a.budget for a in agents}
 
-    # Per-fill markout against fair-at-fill-time. Truth is the static scalar this
-    # phase, so the accessor returns the same value at every timestamp and this
-    # is byte-identical to terminal-fair marking — the time-indexing is plumbing
-    # for a later phase, not a behavior change now.
-    fair_at = frozen_fair_value(fair_map)
+    # Per-fill markout against fair-at-fill-time (the FairValueAt accessor from
+    # the markout rework). Static world: frozen scalar (== terminal, byte-
+    # identical). Moving world (walk_var>0): the walk PATH, so each fill is marked
+    # against the true fair AT its fill tick — separating adverse selection from
+    # the inventory drift that t=0/terminal marking would otherwise conflate.
+    if walk_var > 0.0:
+        fair_at = _walk_path_fair_value(info_env, until_ts)
+    else:
+        fair_at = frozen_fair_value(fair_map)
 
     rpnl = rent_and_pnl(
         records,
