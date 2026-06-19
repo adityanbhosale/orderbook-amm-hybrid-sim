@@ -4,6 +4,38 @@
 
 ---
 
+## STATUS (2026-06-19) — τ-curve DONE; headline result produced
+
+The full §5 build landed (each phase gated, committed): LP fill channel
+(`1401c97`), time-indexed markout (`9b2b8d5`), time-aware Kalman belief
+scalar+matrix (`b113966`, `ad8a327`), moving-truth common-factor walk
+(`6c17346`), markout re-pointed to fair-at-fill on the path (`57dab02`), FBA
+wired as a runnable sweep mechanism (`cbcccbc`). Full detail + the result table
+are in `build_log_fba.md` Entry 4.
+
+**Headline (paired-by-seed, N=25, `walk_var=1e-6`, `q=walk_var`,
+`lp_vs_informed` mid/low, FAST delay 1 < LP delay 50):** switching continuous
+CLOB → FBA uniform-price batch clearing reduces the LP's latency-driven bleed
+from `pnl_lp ≈ −92` to `≈ −5` — **paired reduction +86.6, SEM 6.7, ≈13σ, 95% of
+seeds**. Genuine per-fill protection (~−4.2/fill CLOB vs ~−0.4/fill FBA, ~10×).
+**Flat in τ** (≈+87 at τ=1,10,50) — the protection is the *mechanism switch*, not
+the batch interval. Transfer holds directionally (informed Σ +182 → ~+132;
+prevention, not 1:1 conservation).
+
+**Caveats (load-bearing — do not drop):** one cell only (mid/low, ts=8000, single
+delay gap); τ=200 contaminated by the LP trading less (`n_fills` 12→7 — clean
+comparison is τ=1–50); 96% robust not 100% (1/25 seeds flipped); whole result
+rests on the faithful-environment chain above. Defensible claim is the **paired
+~95% reduction in this regime, protection from the mechanism switch**, NOT
+"batching eliminates extraction" and NOT generality beyond the tested cell.
+
+**Open threads (not done):** walk-aware convergence metric + AMM `lp_rent` still
+t=0-referenced (Phase C); regime/delay-gap sweep of the τ-result; endogenous LP
+spread (§5.4); corrected incumbent baselines on the new recording (§5.6). The §5
+sections below are the original plan; the §9 "first move" is historical.
+
+---
+
 ## 0. Who I am / how to read this
 
 I'm Aditya — rising senior at Penn (Econ/Bio/CS, grad May 2027), based in NYC for summer 2026. I do independent research on prediction-market microstructure and mechanism design. Public surface: `adityanb.com`, Substack (`adibhosale.substack.com`), GitHub (`github.com/adityanbhosale`). Stack: Python, Solidity, TypeScript, SQL, React/Next, Foundry, Node. I use a `handoff.md` pattern for cross-session continuity (this doc).

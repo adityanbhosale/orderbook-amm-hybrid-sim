@@ -845,3 +845,123 @@ from Entry 2), so no submit-time rows pollute
 Existing suite unchanged and green (the `MakerFill`/environment extensions
 are default-compatible: CLOB/hybrid records are byte-identical). Sweep not
 run; nothing committed.
+
+---
+
+## Entry 4 — FBA τ-curve result (the headline measurement)
+
+Date: 2026-06-19. The result the build exists to produce: switching continuous
+CLOB matching → FBA uniform-price batch clearing **robustly reduces the LP's
+latency-driven bleed**, measured paired-by-seed. Measurement only (no code
+changed for it); the apparatus was built across the committed phases below.
+
+### Apparatus this result depends on (traceability)
+
+The measurement is only interpretable because of the faithful-environment chain
+built between Entry 3 and here (each phase gated, `q=0`/`walk_var=0` byte-
+identical, committed):
+
+- `1401c97` — §5.4 `LpMarketMakerAgent`: the inter-agent fill channel (without a
+  fillable resting quoter, latency is inert). Finding at the time: in the FROZEN
+  world the LP **profits** (`pnl_lp=+0.87`) — a maker quoting around an unbiased
+  belief earns its spread; static truth → no adverse selection.
+- `9b2b8d5` — markout time-indexed (`FairValueAt` accessor).
+- `b113966` / `ad8a327` — time-aware (Kalman) belief, scalar + joint-factor
+  matrix, gated on `q>0`. Lets a delayed agent be a *correctly-specified tracker*
+  with bounded lag instead of a frozen filter — so a measured bleed is genuine
+  staleness, not a filter artifact.
+- `6c17346` — moving-truth world: common-factor Gaussian random walk
+  (`walk_var`), agents coupled `q=walk_var`.
+- `57dab02` — markout re-pointed to the walk path (fair-at-fill-time), so per-fill
+  PnL separates adverse selection from inventory drift.
+- `cbcccbc` — FBA wired as a runnable sweep mechanism (this build log Entry 3's
+  venue + the §5.6 sweep integration; `route_log_space_trade` extended to FBA).
+
+Pre-req confirmed earlier (multi-seed, `57dab02`+): the moving-truth LP bleed is
+robust on the **mean** — `walk_var=1e-6`, mean `pnl_lp ≈ −92`, `|mean|/SEM ≈ 6`,
+96% of seeds bled — though per-seed dispersion (~±72) is ~the mean (the bleed is
+a distribution, no single seed is reliable). That dispersion is why the τ-curve
+must be **paired by seed**.
+
+### Cell and design
+
+Fixed cell: `lp_vs_informed`, mid/low, `until_ts=8000`, `walk_var=1e-6`,
+`q=walk_var` coupled, FAST informed `observation_delay=1` < LP `observation_delay
+=50`. Mechanisms compared **on the same walk path per seed** (the walk RNG is
+`SeedSequence(seed).spawn(5)[4]`, independent of mechanism, so CLOB and every
+FBA-τ at one seed see identical truth/signals/agents — only the matching
+mechanism differs): CLOB (continuous, the τ=0 point) vs FBA at τ∈{1,10,50,200}.
+N=25 seeds. Headline = per-seed paired reduction `FBA pnl_lp − CLOB pnl_lp`
+(positive ⇒ FBA bleeds less); the common walk variance cancels in the pair.
+
+### Result
+
+CLOB absolute bleed mean `−91.86` (matches the `−92` anchor); FBA cuts it to
+`~−5`. Paired reduction:
+
+| τ      | FBA mean bleed | paired reduction | SEM  | mean/SEM | frac seeds reduced |
+|--------|----------------|------------------|------|----------|--------------------|
+| 1      | −4.74          | +87.12           | 13.4 | 6.5      | 0.96               |
+| 10     | −4.68          | +87.19           | 13.4 | 6.5      | 0.96               |
+| 50     | −4.87          | +86.99           | 13.4 | 6.5      | 0.96               |
+| 200    | −6.68          | +85.18           | 13.6 | 6.3      | 0.92               |
+| pooled | —              | **+86.62**       | 6.7  | **12.9** | 0.95               |
+
+The pairing worked as designed: absolute per-seed dispersion (~±72) collapses to
+a paired SEM of ~13 (per τ) / 6.7 (pooled). **Robustly positive: ~95% reduction,
+≈13σ pooled.** Kill condition (paired reduction ≈0 or sign-flipped once the walk
+path is controlled) **not met**.
+
+### Why it's genuine (not just fewer fills)
+
+Per-fill markout: CLOB `−91.86/22 ≈ −4.2/fill` vs FBA τ=1 `−4.7/12 ≈ −0.4/fill`
+— **~10× lower per fill**. So the reduction is per-fill protection from uniform
+pricing (the informed taker clears at the auction p*, not at the LP's exact stale
+quote; simultaneity removes the within-tick speed advantage), not merely the LP
+trading less. Budish–Cramton–Shim in this synthetic, endogenous-behaviour setting.
+
+### Shape — flat in τ (the protection is the mechanism switch)
+
+Paired reduction is +87 at τ=1, 10, 50 and only edges to +85 at τ=200. The
+protection is the **discrete continuous→uniform-price-batch step, essentially
+τ-independent over τ∈[1,200]**, NOT a smooth τ-slope. Longer batching does not
+deepen it. (A flat τ-curve is therefore the expected shape here, not a null
+result — the reframed kill condition was about the paired *reduction*, which is
+large.)
+
+### Transfer — extraction prevented, not relocated (directionally)
+
+Informed Σ mean: CLOB `+182.1` → FBA `+129…138`. As the LP bleeds less, the
+informed gain **shrinks** — extraction is curbed, not moved to another
+counterparty. But **not 1:1**: LP improves `+87` while informed gain falls only
+`~−50`; the gap goes to lower traded volume (FBA LP `n_fills ~12` vs CLOB `22`)
+and the bootstrap/noise counterparties. Log as *directionally a prevention, not a
+clean conservation*.
+
+### Caveats (do not drop these in any writeup)
+
+- **One cell only:** mid/low, `ts=8000`, a single delay gap (FAST=1, LP=50). Not
+  yet swept across capital bands, signal regimes, or delay gaps. No claim of
+  generality beyond this cell.
+- **τ=200 is contaminated:** FBA LP `n_fills` falls with τ (12 → 10 → 8 → 7; the
+  single-seed probe showed τ=800 → 5). At long τ the reduction blends genuine
+  protection with the LP simply trading less. The **clean comparison is τ=1–50**,
+  where the LP stays active (8–12 fills, second-half fraction ~0.22–0.27, not
+  silent) and the per-fill bleed is still ~10× lower.
+- **96% robust, not 100%:** 1 of 25 seeds (paired `red_min ≈ −34`) showed FBA
+  bleeding slightly *more*. The result is a strong distribution, not unanimous.
+- **Rests entirely on the apparatus chain above.** If any link (moving truth,
+  correctly-specified Kalman tracking, fair-at-fill markout) were wrong, the
+  number would be an artifact. Each was gated byte-identical at its off-switch;
+  the result is traceable to the listed commits.
+
+### Defensible claim
+
+"Switching continuous CLOB matching to FBA uniform-price batch clearing reduces
+the LP's latency-driven bleed by ~95% (paired ≈13σ over 25 seeds) in this
+moving-truth, correctly-specified-agents cell; the protection is the mechanism
+switch (flat in τ over 1–200), and the informed gain shrinks correspondingly
+(extraction prevented, directionally)." **Not** "batching eliminates extraction"
+and **no** implied generality beyond the tested cell.
+
+Measurement only; nothing committed by the run.
