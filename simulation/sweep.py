@@ -41,9 +41,10 @@ from metrics.convergence import build_mid_trajectory_from_trades, convergence_me
 from metrics.rent import FairValueAt, frozen_fair_value, pnl_by_role, rent_and_pnl
 from venues.clob import CLOB
 from venues.constant_product import ConstantProductAMM
+from venues.fba import FBAVenue
 from venues.hybrid import HybridLpConfig, HybridVenue
 
-MechanismName = Literal["amm", "clob", "hybrid"]
+MechanismName = Literal["amm", "clob", "hybrid", "fba"]
 MixName = Literal["diverse", "naive_dominated", "lp_vs_informed"]
 SignalRegimeName = Literal["low", "high"]
 CapitalBandName = Literal["low", "mid", "high"]
@@ -211,6 +212,31 @@ def _clob_venues_from_truth(
     return out
 
 
+def _fba_venues_from_truth(
+    info_env: InformationEnvironment,
+    reserve_x: float,
+    anchor_prices: dict[int, float],
+    *,
+    tau_ticks: int,
+    fee_rate: float = 0.0,
+) -> dict[int, FBAVenue]:
+    """Frequent-batch-auction venues, one per market, cleared every ``tau_ticks``.
+
+    Mirrors ``_clob_venues_from_truth`` — same anchor bootstrap ladder (which
+    rests in the batch book and participates in clears) — but the venue defers
+    all fills to the periodic uniform-price call. ``tau_ticks`` is the batch
+    interval τ swept by the τ-curve.
+    """
+    depth = 0.005 * float(reserve_x)
+    out: dict[int, FBAVenue] = {}
+    for t in info_env.world.truths:
+        m = t.market_id
+        venue = FBAVenue(tau_ticks=tau_ticks, fee_rate=fee_rate)
+        venue.seed_initial_book(anchor_prices[m], depth)
+        out[m] = venue
+    return out
+
+
 def _hybrid_venues_from_truth(
     info_env: InformationEnvironment,
     reserve_x: float,
@@ -262,6 +288,10 @@ def _register_venue_clock(
     def _pulse(_sim: Simulator, _event: Event) -> None:
         for v in market_env.venues.values():
             v.tick()
+        # Drain clear-time fills (FBA produces both legs inside tick()). No-op for
+        # AMM/CLOB/hybrid: their maker fills are already drained synchronously in
+        # _on_trade, so the buffers are empty here and nothing is recorded.
+        market_env.drain_venue_fills(_sim)
 
     sim.register_handler("venue_clock", _pulse)
     for t in range(0, until_ts + 1):
@@ -497,8 +527,9 @@ def run_single_simulation(
     lp_budget: float = 20_000.0,
     walk_var: float = 0.0,
     belief_process_var: float | None = None,
+    tau_ticks: int = 1,
 ) -> dict[str, Any]:
-    if mechanism not in ("amm", "clob", "hybrid"):
+    if mechanism not in ("amm", "clob", "hybrid", "fba"):
         raise ValueError(f"unknown mechanism {mechanism!r}")
     delays = observation_delays or RoleDelayConfig()
     budget = CAPITAL_BANDS[capital_band]
@@ -541,6 +572,10 @@ def run_single_simulation(
         venues_any = _venues_from_truth(info_env, reserve_x, anchor_prices)
     elif mechanism == "clob":
         venues_any = _clob_venues_from_truth(info_env, reserve_x, anchor_prices)
+    elif mechanism == "fba":
+        venues_any = _fba_venues_from_truth(
+            info_env, reserve_x, anchor_prices, tau_ticks=tau_ticks
+        )
     else:
         venues_any = _hybrid_venues_from_truth(info_env, reserve_x, anchor_prices)
 
@@ -756,6 +791,7 @@ def run_single_simulation(
         "delay_slow": delays.slow,
         "walk_var": walk_var,
         "belief_process_var": q_eff,
+        "tau_ticks": tau_ticks,
         "pnl_fast_informed": role_pnl.get(ROLE_FAST, 0.0),
         "pnl_slow_informed": role_pnl.get(ROLE_SLOW, 0.0),
         "pnl_noise_role": role_pnl.get(ROLE_NOISE, 0.0),

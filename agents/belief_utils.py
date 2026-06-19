@@ -16,6 +16,7 @@ from environment.trading_utils import (
 from venues.base import VenueState
 from venues.clob import CLOB, EmptyBookError
 from venues.constant_product import ConstantProductAMM
+from venues.fba import FBAVenue
 from venues.hybrid import HybridVenue
 
 if TYPE_CHECKING:
@@ -144,7 +145,7 @@ def consider_trade_log_space(
 
 
 def maker_taker_decision(
-    venue: CLOB | HybridVenue,
+    venue: CLOB | HybridVenue | FBAVenue,
     posterior_mean_log: float,
     venue_state: VenueState,
     signal_strength: float,
@@ -365,7 +366,7 @@ def route_log_space_trade(
             confidence_floor=confidence_floor,
             confidence_ceiling=confidence_ceiling,
         )
-    if isinstance(v, (CLOB, HybridVenue)):
+    if isinstance(v, (CLOB, HybridVenue, FBAVenue)):
         return consider_clob_hybrid_trade(
             agent_id=agent_id,
             market_id=market_id,
